@@ -1,5 +1,6 @@
 const { Events } = require('discord.js');
 const guildapp = require('../guildapp/handlers');
+const officerapp = require('../officerapp/handlers');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -7,11 +8,17 @@ module.exports = {
   async execute(interaction) {
     try {
       // ----------------------------------------------------------------------
-      // Guild application feature: buttons (guildapp:start, appapprove:*,
-      // appdeny:*) and modal submit (guildapp:modal). route() returns true if
+      // Guild application feature: buttons (guildapp:start, appreview:*) and
+      // modal submit (guildapp:modal). route() returns true if
       // it owned the interaction.
       // ----------------------------------------------------------------------
       if (interaction.isButton() || interaction.isModalSubmit()) {
+        // Job-ad -> officer-application feature: jobad:modal, jobapply:<id>,
+        // officerapp:modal:<id>, officerreview:daddy|mummy|reject:<userId>:<id>.
+        // Routed first so its customIds are claimed before the guild-app router.
+        const officerHandled = await officerapp.route(interaction);
+        if (officerHandled) return;
+
         const handled = await guildapp.route(interaction);
         if (handled) return;
         // Unrecognised component/modal — ignore silently (could belong to a

@@ -8,7 +8,7 @@ const {
   TextInputStyle,
 } = require('discord.js');
 
-const { IDS, FIELDS, REVIEWER_ROLE_IDS, ROLE_IDS } = require('./constants');
+const { IDS, FIELDS, REVIEWER_ROLE_IDS, ROLE_IDS, CLASS_ROLE_BY_ID } = require('./constants');
 
 const APPLICATION_CHANNEL_ID = process.env.APPLICATION_CHANNEL_ID || '1518623626247671878';
 
@@ -70,12 +70,18 @@ async function handleModalSubmit(interaction) {
     inviter:   interaction.fields.getTextInputValue(FIELDS.INVITER).trim(),
   };
 
+  // Detect class from the applicant's self-assigned class role.
+  const classRoleEntry = interaction.member?.roles?.cache
+    ?.find((_role, id) => CLASS_ROLE_BY_ID[id]);
+  const applicantClass = classRoleEntry ? CLASS_ROLE_BY_ID[classRoleEntry.id] : '—';
+
   const embed = new EmbedBuilder()
     .setTitle('Guild Application')
     .setColor(0x2b2d31)
     .setDescription(`Applicant: ${interaction.user} (${interaction.user.tag})`)
     .addFields(
       { name: 'In-game Name',         value: answers.ign || '—',       inline: false },
+      { name: 'Class',                value: applicantClass,            inline: false },
       { name: 'Playstyle',            value: answers.playstyle || '—', inline: true  },
       { name: 'Previous Guild (CBT)', value: answers.prevGuild || '—', inline: true  },
       { name: 'Inviter',              value: answers.inviter || '—',   inline: false },
@@ -84,15 +90,23 @@ async function handleModalSubmit(interaction) {
     )
     .setTimestamp();
 
-  // Approve customId carries only the applicant id now. Format: appapprove:<applicantUserId>.
+  // Four review buttons — appreview:<action>:<applicantUserId>
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`${IDS.APPROVE_PREFIX}:${interaction.user.id}`)
-      .setLabel('Approve')
+      .setCustomId(`${IDS.REVIEW_PREFIX}:main:${interaction.user.id}`)
+      .setLabel('Daddy')
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
-      .setCustomId(`${IDS.DENY_PREFIX}:${interaction.user.id}`)
-      .setLabel('Deny')
+      .setCustomId(`${IDS.REVIEW_PREFIX}:second:${interaction.user.id}`)
+      .setLabel('Mummy')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`${IDS.REVIEW_PREFIX}:wait:${interaction.user.id}`)
+      .setLabel('Waiting List')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`${IDS.REVIEW_PREFIX}:reject:${interaction.user.id}`)
+      .setLabel('Reject')
       .setStyle(ButtonStyle.Danger),
   );
 
@@ -106,61 +120,89 @@ async function handleModalSubmit(interaction) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Approve / Deny buttons (staff action).
+// 5. Review buttons (staff action) — four outcomes.
 // ---------------------------------------------------------------------------
 
 // Returns true only if the member holds at least one of the designated reviewer roles.
-// ManageGuild and STAFF_ROLE_ID env var are intentionally not checked here.
 function isReviewer(interaction) {
   const member = interaction.member;
   if (!member) return false;
-
   return REVIEWER_ROLE_IDS.some(roleId => member.roles?.cache?.has?.(roleId));
 }
 
 // ---------------------------------------------------------------------------
-// Approval role management. Runs on the applicant's GuildMember:
-//   - remove Recruit by ID (if present), add Daddy by ID (ROLE_IDS.ACCEPTED)
-// Every guild/role op is wrapped so a failure never crashes the approve flow.
-// Returns { warnings: string[] } — non-empty means surface to the reviewer.
+// Outcome config — drives embed presentation and role ops for each action.
 // ---------------------------------------------------------------------------
-async function applyApprovalRoles(interaction, applicantUserId) {
-  const warnings = [];
-  const guild = interaction.guild;
+const OUTCOME = {
+  main: {
+    statusText: '✅ Accepted — Main Guild',
+    color:      0x2ecc71,
+    dmText:     '🎉 Congratulations! Your guild application has been approved — welcome to the guild! We\'re so happy to have you with us. Take a moment to look around the channels and introduce yourself, and we\'ll see you in-game! 💛',
+    async applyRoles(member) {
+      const warnings = [];
+      try {
+        if (member.roles.cache.has(ROLE_IDS.RECRUIT)) {
+          await member.roles.remove(ROLE_IDS.RECRUIT, 'Guild application accepted — Main Guild');
+        }
+      } catch (err) {
+        warnings.push(`could not remove Recruit: ${err?.message || err}`);
+      }
+      try {
+        await member.roles.add(ROLE_IDS.ACCEPTED, 'Guild application accepted — Main Guild');
+      } catch (err) {
+        warnings.push(`could not add Daddy: ${err?.message || err}`);
+      }
+      return warnings;
+    },
+  },
+  second: {
+    statusText: '✅ Accepted — Second Guild',
+    color:      0x2ecc71,
+    dmText:     '🎉 Congratulations! Your guild application has been approved — welcome to the guild! We\'re so happy to have you with us. Take a moment to look around the channels and introduce yourself, and we\'ll see you in-game! 💛',
+    async applyRoles(member) {
+      const warnings = [];
+      try {
+        if (member.roles.cache.has(ROLE_IDS.RECRUIT)) {
+          await member.roles.remove(ROLE_IDS.RECRUIT, 'Guild application accepted — Second Guild');
+        }
+      } catch (err) {
+        warnings.push(`could not remove Recruit: ${err?.message || err}`);
+      }
+      try {
+        await member.roles.add(ROLE_IDS.MUMMY, 'Guild application accepted — Second Guild');
+      } catch (err) {
+        warnings.push(`could not add Mummy: ${err?.message || err}`);
+      }
+      return warnings;
+    },
+  },
+  wait: {
+    statusText: '🕓 Waiting List',
+    color:      0xF1C40F,
+    dmText:     '💛 Thank you so much for applying to our guild! For now, we\'ve placed your application on our waiting list — this isn\'t a no, we simply have limited space at the moment. We\'ll reach out to you the very moment a spot opens up. We truly appreciate your patience and your interest in joining us!',
+    async applyRoles(member) {
+      const warnings = [];
+      // Keep Recruit; add Waiting List role.
+      try {
+        await member.roles.add(ROLE_IDS.WAITING_LIST, 'Guild application — placed on waiting list');
+      } catch (err) {
+        warnings.push(`could not add Waiting List: ${err?.message || err}`);
+      }
+      return warnings;
+    },
+  },
+  reject: {
+    statusText: '❌ Not Accepted',
+    color:      0xe74c3c,
+    dmText:     'Thank you so very much for taking the time to apply to our guild — it genuinely means a lot that you considered joining us. After careful and thoughtful consideration, we\'re sorry to say we\'re unable to offer you a place at this time. Please know this is in no way a reflection of you as a player or as a person, and you would be most welcome to apply again in the future. We sincerely wish you all the very best in your adventures, and we hope our paths cross again someday. 💛',
+    async applyRoles(_member) {
+      // No role changes on reject.
+      return [];
+    },
+  },
+};
 
-  if (!guild) {
-    warnings.push('no guild context — role changes skipped');
-    return { warnings };
-  }
-
-  // Fetch the member; if they've left the guild, skip role changes entirely.
-  let member;
-  try {
-    member = await guild.members.fetch(applicantUserId);
-  } catch (err) {
-    warnings.push('applicant is no longer in the server — role changes skipped');
-    return { warnings };
-  }
-
-  // Remove Recruit by ID (if present), add Daddy by ID.
-  try {
-    if (member.roles.cache.has(ROLE_IDS.RECRUIT)) {
-      await member.roles.remove(ROLE_IDS.RECRUIT, 'Guild application approved');
-    }
-  } catch (err) {
-    warnings.push(`could not remove Recruit: ${err?.message || err}`);
-  }
-
-  try {
-    await member.roles.add(ROLE_IDS.ACCEPTED, 'Guild application approved');
-  } catch (err) {
-    warnings.push(`could not add Daddy: ${err?.message || err}`);
-  }
-
-  return { warnings };
-}
-
-async function handleReviewButton(interaction, decision /* 'approve' | 'deny' */, applicantUserId) {
+async function handleReviewButton(interaction, action, applicantUserId) {
   if (!isReviewer(interaction)) {
     await interaction.reply({
       content: "You don't have permission to review applications.",
@@ -169,39 +211,56 @@ async function handleReviewButton(interaction, decision /* 'approve' | 'deny' */
     return;
   }
 
-  const approved = decision === 'approve';
+  const outcome = OUTCOME[action];
+  if (!outcome) {
+    // Unknown action — ignore silently (shouldn't happen with known customIds).
+    return;
+  }
 
-  // Rebuild the embed from the posted message, overriding Status + color +
-  // adding "Reviewed by".
+  // Rebuild the embed from the posted message, setting Status + color + Reviewed by.
   const source = interaction.message.embeds[0];
-  const embed = EmbedBuilder.from(source)
-    .setColor(approved ? 0x2ecc71 : 0xe74c3c);
+  const embed = EmbedBuilder.from(source).setColor(outcome.color);
 
-  // Replace the Status field; append Reviewed by.
+  const reviewerName = interaction.member?.displayName ?? interaction.user.tag;
   const fields = (source.fields || []).map(f =>
     f.name === 'Status'
-      ? { name: 'Status', value: approved ? '✅ Approved' : '❌ Denied', inline: f.inline }
+      ? { name: 'Status', value: outcome.statusText, inline: f.inline }
       : { name: f.name, value: f.value, inline: f.inline },
   );
-  fields.push({ name: 'Reviewed by', value: interaction.member?.displayName ?? interaction.user.tag, inline: false });
+  fields.push({ name: 'Reviewed by', value: reviewerName, inline: false });
   embed.setFields(fields);
 
-  // Disable both buttons.
+  // Disable all four buttons.
+  const originalComponents = interaction.message.components[0].components;
   const disabledRow = new ActionRowBuilder().addComponents(
-    ButtonBuilder.from(interaction.message.components[0].components[0]).setDisabled(true),
-    ButtonBuilder.from(interaction.message.components[0].components[1]).setDisabled(true),
+    ...originalComponents.map(c => ButtonBuilder.from(c).setDisabled(true)),
   );
 
   await interaction.update({ embeds: [embed], components: [disabledRow] });
 
-  // On approval, manage roles. All ops are individually try/catch'd inside the
-  // helper, so this never throws — it returns warnings to surface if any op
-  // failed (missing perms / hierarchy / member left / missing role).
-  if (approved) {
+  // Role management — fetch member; if gone, skip roles but still update embed + DM.
+  let member = null;
+  const guild = interaction.guild;
+  if (guild) {
+    try {
+      member = await guild.members.fetch(applicantUserId);
+    } catch (_err) {
+      // Member left — surface a soft warning, continue to DM attempt.
+      try {
+        await interaction.followUp({
+          content: 'Outcome recorded, but applicant is no longer in the server — role changes skipped.',
+          ephemeral: true,
+        });
+      } catch (e) {
+        console.warn('[guildapp] Could not send member-left followUp:', e?.message || e);
+      }
+    }
+  }
+
+  if (member) {
     let roleWarnings = [];
     try {
-      const result = await applyApprovalRoles(interaction, applicantUserId);
-      roleWarnings = result.warnings;
+      roleWarnings = await outcome.applyRoles(member);
     } catch (err) {
       roleWarnings = [`unexpected error: ${err?.message || err}`];
     }
@@ -210,9 +269,9 @@ async function handleReviewButton(interaction, decision /* 'approve' | 'deny' */
       try {
         await interaction.followUp({
           content:
-            'Approved, but couldn\'t assign some roles: ' +
+            'Outcome recorded, but couldn\'t change some roles: ' +
             roleWarnings.join('; ') +
-            '. Check the bot has Manage Roles and its role is above the Daddy role in the hierarchy.',
+            '. Check the bot has Manage Roles and its role is above Daddy/Mummy/Waiting List/Recruit.',
           ephemeral: true,
         });
       } catch (e) {
@@ -224,11 +283,7 @@ async function handleReviewButton(interaction, decision /* 'approve' | 'deny' */
   // Best-effort DM to the applicant — never crash if DMs are closed.
   try {
     const applicant = await interaction.client.users.fetch(applicantUserId);
-    await applicant.send(
-      approved
-        ? 'Your guild application has been approved!'
-        : 'Your guild application was not approved at this time.',
-    );
+    await applicant.send(outcome.dmText);
   } catch (err) {
     console.warn(`[guildapp] Could not DM applicant ${applicantUserId}:`, err?.message || err);
   }
@@ -237,7 +292,7 @@ async function handleReviewButton(interaction, decision /* 'approve' | 'deny' */
 // ---------------------------------------------------------------------------
 // Router — called from events/interactionCreate.js. Returns true if it handled
 // the interaction (so the command path is skipped).
-// Handles: guildapp:start, guildapp:modal, appapprove:*, appdeny:*
+// Handles: guildapp:start, guildapp:modal, appreview:<action>:<userId>
 // ---------------------------------------------------------------------------
 async function route(interaction) {
   // Buttons
@@ -248,14 +303,12 @@ async function route(interaction) {
       await handleStartButton(interaction);
       return true;
     }
-    if (id.startsWith(`${IDS.APPROVE_PREFIX}:`)) {
-      // appapprove:<applicantUserId>
-      await handleReviewButton(interaction, 'approve', id.split(':')[1]);
-      return true;
-    }
-    if (id.startsWith(`${IDS.DENY_PREFIX}:`)) {
-      // appdeny:<applicantUserId>
-      await handleReviewButton(interaction, 'deny', id.split(':')[1]);
+    if (id.startsWith(`${IDS.REVIEW_PREFIX}:`)) {
+      // appreview:<action>:<applicantUserId>
+      const parts = id.split(':');
+      const action = parts[1];          // main | second | wait | reject
+      const applicantUserId = parts[2]; // snowflake
+      await handleReviewButton(interaction, action, applicantUserId);
       return true;
     }
     return false;
