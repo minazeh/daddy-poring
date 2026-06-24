@@ -63,6 +63,11 @@ the missing `.env` file is harmless in production.
 ## Don't forget
 - **Server Members Intent** must be enabled in the Developer Portal (Bot → Privileged
   Gateway Intents) — required for the welcome-on-join event. Same as locally; unrelated to host.
+- **Kudos system** needs a **MongoDB Atlas** DB + the **Message Content Intent** —
+  see `KUDOS-DEPLOY.md`. If you skip it, the bot still runs and kudos just replies
+  "not configured yet"; everything else is unaffected. Set `MONGODB_URI` (the SAME
+  Atlas SRV string locally and in Railway → Variables), and in Atlas allow Network
+  Access from `0.0.0.0/0` (Railway egress IPs are dynamic).
 - **No exposed port** — Railway may warn about this. Ignore it; the bot doesn't serve HTTP.
 - **No separate deploy step** — slash commands auto-register on startup (needs `GUILD_ID` set).
 - **Cost** — Railway has no free tier; the Hobby plan (~$5/mo usage-based) covers a small bot easily.

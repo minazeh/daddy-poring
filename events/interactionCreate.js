@@ -1,6 +1,7 @@
 const { Events } = require('discord.js');
 const guildapp = require('../guildapp/handlers');
 const officerapp = require('../officerapp/handlers');
+const partyfinder = require('../partyfinder/handlers');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -12,10 +13,17 @@ module.exports = {
       // modal submit (guildapp:modal). route() returns true if
       // it owned the interaction.
       // ----------------------------------------------------------------------
-      if (interaction.isButton() || interaction.isModalSubmit()) {
+      if (interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) {
+        // Party Finder feature: partyfinder:start/carry entry buttons, pf:size
+        // select, pf:details/roles/carrydetails modals, and the pf:rolesopen/
+        // join/cancel/carryrespond/carrycancel buttons. Routed first so its
+        // customIds (and the only select-menu in the bot) are claimed.
+        const partyHandled = await partyfinder.route(interaction);
+        if (partyHandled) return;
+
         // Job-ad -> officer-application feature: jobad:modal, jobapply:<id>,
         // officerapp:modal:<id>, officerreview:daddy|mummy|reject:<userId>:<id>.
-        // Routed first so its customIds are claimed before the guild-app router.
+        // Routed before the guild-app router so its customIds are claimed first.
         const officerHandled = await officerapp.route(interaction);
         if (officerHandled) return;
 

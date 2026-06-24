@@ -12,7 +12,10 @@ const { Client, Collection, GatewayIntentBits } = require('discord.js');
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers, // Required for guildMemberAdd event
+    GatewayIntentBits.GuildMembers,    // guildMemberAdd + member role reads
+    GatewayIntentBits.GuildMessages,   // receive messageCreate in guild channels
+    GatewayIntentBits.MessageContent,  // read message text for the "kudos @member" listener
+                                       // (PRIVILEGED — enable Message Content Intent in the Dev Portal)
   ],
 });
 

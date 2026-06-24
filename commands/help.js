@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { REVIEWER_ROLE_IDS } = require('../guildapp/constants');
 const { OFFICER_ROLE_IDS } = require('../officerapp/constants');
+const { PARTYFINDER_ROLE_IDS } = require('../partyfinder/constants');
 
 // ---------------------------------------------------------------------------
 // Command metadata — single source of truth for the help list.
@@ -43,15 +44,38 @@ const COMMANDS = [
     category: 'Officers',
     access: Object.values(OFFICER_ROLE_IDS),
   },
+  {
+    name: 'partyfinder',
+    usage: '/partyfinder',
+    description: 'Posts the Party Finder card so members can start a class-balanced party or request a carry.',
+    category: 'Party Finder',
+    access: PARTYFINDER_ROLE_IDS,
+  },
+  {
+    name: 'kudosboard',
+    usage: '/kudosboard',
+    description: 'Shows the kudos leaderboard. Give kudos by chatting `kudos @member` (up to 7/day).',
+    category: 'Community',
+    access: 'everyone',
+  },
+  {
+    name: 'profile',
+    usage: '/profile [user]',
+    description: 'Shows a member\'s kudos profile — total received, rank, and how many they\'ve given today.',
+    category: 'Community',
+    access: 'everyone',
+  },
 ];
 
 // ---------------------------------------------------------------------------
 // Category display config
 // ---------------------------------------------------------------------------
 const CATEGORY_META = {
-  General:    { label: '📋 General',    color: 0x5865F2 },
-  Leadership: { label: '🛡️ Leadership', color: 0x5865F2 },
-  Officers:   { label: '⚔️ Officers',   color: 0x5865F2 },
+  General:        { label: '📋 General',       color: 0x5865F2 },
+  Leadership:     { label: '🛡️ Leadership',    color: 0x5865F2 },
+  Officers:       { label: '⚔️ Officers',      color: 0x5865F2 },
+  'Party Finder': { label: '🎮 Party Finder',  color: 0x5865F2 },
+  Community:      { label: '🙌 Community',      color: 0x5865F2 },
 };
 
 module.exports = {
