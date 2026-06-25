@@ -65,6 +65,13 @@ const COMMANDS = [
     category: 'Community',
     access: 'everyone',
   },
+  {
+    name: 'qna',
+    usage: '/qna',
+    description: 'Shows the top 10 quiz scorers. Answer the class-channel quiz questions to climb the board.',
+    category: 'Quiz',
+    access: 'everyone',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -76,6 +83,7 @@ const CATEGORY_META = {
   Officers:       { label: '⚔️ Officers',      color: 0x5865F2 },
   'Party Finder': { label: '🎮 Party Finder',  color: 0x5865F2 },
   Community:      { label: '🙌 Community',      color: 0x5865F2 },
+  Quiz:           { label: '🎯 Quiz',          color: 0x5865F2 },
 };
 
 module.exports = {

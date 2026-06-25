@@ -2,6 +2,7 @@ const { Events } = require('discord.js');
 const guildapp = require('../guildapp/handlers');
 const officerapp = require('../officerapp/handlers');
 const partyfinder = require('../partyfinder/handlers');
+const quiz = require('../quiz/handlers');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -20,6 +21,11 @@ module.exports = {
         // customIds (and the only select-menu in the bot) are claimed.
         const partyHandled = await partyfinder.route(interaction);
         if (partyHandled) return;
+
+        // Class Quiz feature: answer buttons (quiz:answer:<LETTER>). The quiz:*
+        // namespace is unique, so this won't collide with the routers below.
+        const quizHandled = await quiz.route(interaction);
+        if (quizHandled) return;
 
         // Job-ad -> officer-application feature: jobad:modal, jobapply:<id>,
         // officerapp:modal:<id>, officerreview:daddy|mummy|reject:<userId>:<id>.
