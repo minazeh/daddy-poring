@@ -55,6 +55,7 @@ async function initSchema() {
     await collection.createIndex({ recipientId: 1 });
     await collection.createIndex({ giverId: 1, createdAt: 1 });
     await collection.createIndex({ guildId: 1 });
+    await collection.createIndex({ guildId: 1, createdAt: 1 }); // backs topRecipientsToday daily query
     connected = true;
     return true;
   } catch (err) {
@@ -134,6 +135,19 @@ async function topRecipients(guildId, limit = 15) {
   return rows.map(r => ({ recipient_id: r._id, total: r.total }));
 }
 
+// Top N recipients for a guild since GMT+7 midnight today. Same return shape
+// as topRecipients — { recipient_id, total } — but scoped to the current day.
+async function topRecipientsToday(guildId, limit = 10, nowMs = Date.now()) {
+  const sinceDate = gmt7DayStart(nowMs);
+  const rows = await collection.aggregate([
+    { $match: { guildId, createdAt: { $gte: sinceDate } } },
+    { $group: { _id: '$recipientId', total: { $sum: 1 } } },
+    { $sort: { total: -1, _id: 1 } },
+    { $limit: limit },
+  ]).toArray();
+  return rows.map(r => ({ recipient_id: r._id, total: r.total }));
+}
+
 // Total kudos a recipient has received in a guild.
 async function totalForRecipient(guildId, recipientId) {
   return collection.countDocuments({ guildId, recipientId });
@@ -175,6 +189,7 @@ module.exports = {
   award,
   addKudos,
   topRecipients,
+  topRecipientsToday,
   totalForRecipient,
   rankForRecipient,
   DAILY_LIMIT,
