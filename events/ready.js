@@ -3,6 +3,7 @@ const { registerCommands } = require('../lib/registerCommands');
 const kudosDb = require('../kudos/db');
 const quizDb = require('../quiz/db');
 const quiz = require('../quiz/handlers');
+const membersync = require('../membersync');
 
 module.exports = {
   name: Events.ClientReady,
@@ -55,6 +56,16 @@ module.exports = {
       }
     } catch (err) {
       console.warn('[ready] Quiz init failed (quiz degraded, bot still online):', err?.message || err);
+    }
+
+    // Member Sync: connect to MongoDB + ensure indexes, run an initial sync,
+    // then start the hourly timer. initAndStart() handles its own errors and
+    // never throws to the boot path — no MONGODB_URI or Atlas unreachable
+    // leaves the bot fully operational (other features unaffected).
+    try {
+      await membersync.initAndStart(client);
+    } catch (err) {
+      console.warn('[ready] Member sync init failed (member sync degraded, bot still online):', err?.message || err);
     }
   },
 };
