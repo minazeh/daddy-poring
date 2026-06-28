@@ -1,14 +1,15 @@
 const { SlashCommandBuilder, AttachmentBuilder } = require('discord.js');
 const db = require('../roster/db');
-const { buildGuildImage } = require('../roster/render');
+const { buildRaidImages } = require('../roster/render');
 
 // Public command. /guildroster guild:daddy|mummy (not required → defaults to
-// "daddy"). Renders ONE combined image — all raid groups + unassigned parties
-// for the guild, stacked vertically — as a single PNG. Everyone can run it.
+// "daddy"). Renders ONE image PER RAID (plus per-field "Unassigned Parties")
+// and sends them ONE BY ONE as separate messages with a text label above each.
+// Everyone can run it.
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('guildroster')
-    .setDescription('Show a guild roster — parties organized by raid group, as one image.')
+    .setDescription('Show a guild roster — one image per raid, posted one by one.')
     .addStringOption(option =>
       option
         .setName('guild')
@@ -38,17 +39,38 @@ module.exports = {
         db.getSettings(),
       ]);
 
-      const image = buildGuildImage(guild, { members, parties, raidGroups, settings });
+      const sections = buildRaidImages(guild, { members, parties, raidGroups, settings });
 
       // Empty state — nothing to show.
-      if (!image) {
+      if (!sections.length) {
         await interaction.editReply(`No parties set up yet for ${guildLabel}.`);
         return;
       }
 
-      // Exactly one combined PNG.
-      const file = new AttachmentBuilder(image.buffer, { name: image.filename });
-      await interaction.editReply({ files: [file] });
+      // Send each section as its OWN message with a single image so Discord
+      // doesn't gallery-group them. Build the text label above each image:
+      //   - first message: "**Guild: <GuildLabel> Roster**" line
+      //   - on a field change: "**Main Teams**" / "**Sub Teams**" header line
+      //   - always: the section title "**<raidName | Unassigned Parties>**"
+      let lastField = null;
+      for (let i = 0; i < sections.length; i++) {
+        const sec = sections[i];
+        const contentLines = [];
+        if (i === 0) contentLines.push(`**Guild: ${guildLabel} Roster**`);
+        if (sec.field !== lastField) {
+          contentLines.push(sec.field === 'main' ? '**Main Teams**' : '**Sub Teams**');
+          lastField = sec.field;
+        }
+        contentLines.push(`**${sec.title}**`);
+
+        const payload = {
+          content: contentLines.join('\n'),
+          files: [new AttachmentBuilder(sec.buffer, { name: sec.filename })],
+        };
+
+        if (i === 0) await interaction.editReply(payload);
+        else await interaction.followUp(payload);
+      }
     } catch (err) {
       console.warn('[guildroster] Render/query failed:', err?.message || err);
       const msg = "Couldn't build the guild roster right now — please try again in a moment.";
