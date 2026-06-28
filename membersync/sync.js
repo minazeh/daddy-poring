@@ -17,6 +17,15 @@ const DADDY_ROLE_ID = ROLE_IDS.ACCEPTED; // "Daddy" — Main Guild
 const MUMMY_ROLE_ID = ROLE_IDS.MUMMY;   // "Mummy" — Second Guild (sub)
 
 // ---------------------------------------------------------------------------
+// Permanent blocklist — belt-and-suspenders exclusion for specific user IDs
+// regardless of role or bot flag. Add a comment for each entry so the reason
+// is traceable. Conrad can append more IDs here as needed.
+// ---------------------------------------------------------------------------
+const EXCLUDED_USER_IDS = new Set([
+  '1520078882789654588', // Bot account — held Daddy/Mummy role; synced in error (excluded 2026-06-28)
+]);
+
+// ---------------------------------------------------------------------------
 // Map a GuildMember to the stored doc schema.
 // Returns the doc object ready for upsertMembers().
 // ---------------------------------------------------------------------------
@@ -74,9 +83,12 @@ async function syncMembers(client) {
         // Fetch all guild members (requires GuildMembers intent, already set).
         await guild.members.fetch();
 
-        // Filter: must hold Daddy OR Mummy role (or both).
+        // Filter: must hold Daddy OR Mummy role (or both), must NOT be a bot,
+        // and must NOT appear in the permanent blocklist.
         const qualifying = guild.members.cache.filter(m =>
-          m.roles.cache.has(DADDY_ROLE_ID) || m.roles.cache.has(MUMMY_ROLE_ID)
+          !m.user.bot &&
+          !EXCLUDED_USER_IDS.has(m.user.id) &&
+          (m.roles.cache.has(DADDY_ROLE_ID) || m.roles.cache.has(MUMMY_ROLE_ID))
         );
 
         const docs = qualifying.map(memberToDoc);
