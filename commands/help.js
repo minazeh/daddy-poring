@@ -59,6 +59,13 @@ const COMMANDS = [
     access: 'everyone',
   },
   {
+    name: 'guildroster',
+    usage: '/guildroster [guild]',
+    description: 'Shows a guild roster as images — parties organized by raid group. Pick Daddy or Mummy (defaults to Daddy).',
+    category: 'Community',
+    access: 'everyone',
+  },
+  {
     name: 'profile',
     usage: '/profile [user]',
     description: 'Shows a member\'s kudos profile — total received, rank, and how many they\'ve given today.',

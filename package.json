@@ -8,6 +8,8 @@
     "deploy": "node deploy-commands.js"
   },
   "dependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "@napi-rs/canvas": "^1.0.1",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
     "mongodb": "^6.21.0"

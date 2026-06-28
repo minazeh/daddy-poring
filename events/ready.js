@@ -4,6 +4,7 @@ const kudosDb = require('../kudos/db');
 const quizDb = require('../quiz/db');
 const quiz = require('../quiz/handlers');
 const membersync = require('../membersync');
+const rosterDb = require('../roster/db');
 
 module.exports = {
   name: Events.ClientReady,
@@ -66,6 +67,23 @@ module.exports = {
       await membersync.initAndStart(client);
     } catch (err) {
       console.warn('[ready] Member sync init failed (member sync degraded, bot still online):', err?.message || err);
+    }
+
+    // Guild Roster: connect (read-only) to MongoDB for /guildroster image
+    // rendering. Same Atlas cluster; own client. Degrades gracefully — no
+    // MONGODB_URI or Atlas unreachable leaves /guildroster showing a "not
+    // available" message and the bot fully online. initSchema() never throws.
+    try {
+      const ok = await rosterDb.initSchema();
+      if (ok) {
+        console.log('[ready] Guild roster store ready (MongoDB, read-only).');
+      } else if (process.env.MONGODB_URI) {
+        console.warn('[ready] Guild roster disabled — could not connect to MongoDB (check Atlas Network Access / URI).');
+      } else {
+        console.warn('[ready] Guild roster disabled — MONGODB_URI not set.');
+      }
+    } catch (err) {
+      console.warn('[ready] Guild roster init failed (roster degraded, bot still online):', err?.message || err);
     }
   },
 };
