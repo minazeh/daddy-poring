@@ -113,6 +113,26 @@ async function getSettings() {
   return db.collection('settings').findOne({ _id: 'global' });
 }
 
+// The member's doc in EITHER guild (daddy/mummy share the same userId in the
+// `members` collection). Returns the raw member doc or null. Read-only.
+async function getMember(userId) {
+  if (!isReady()) return null;
+  return db.collection('members').findOne({ userId });
+}
+
+// The web-owned `memberMeta` doc { userId, power, ... } for a user, or null.
+// Source of truth for power ratings (NOT stored in `members`). Read-only.
+async function getMemberMeta(userId) {
+  if (!isReady()) return null;
+  return db.collection('memberMeta').findOne({ userId });
+}
+
+// Convenience: the user's power rating (int). 0 when no memberMeta doc exists.
+async function getPower(userId) {
+  const meta = await getMemberMeta(userId);
+  return meta && typeof meta.power === 'number' ? meta.power : 0;
+}
+
 // Optional clean shutdown.
 async function close() {
   if (client) {
@@ -129,5 +149,8 @@ module.exports = {
   getParties,
   getRaidGroups,
   getSettings,
+  getMember,
+  getMemberMeta,
+  getPower,
   close,
 };
