@@ -7,13 +7,16 @@ const { classToRole, ROLE_EMOJI } = require('../roster/roles');
 const ROLE_COLOR = { tank: 0x3b82f6, healer: 0x22c55e, dps: 0xf97316 };
 const DEFAULT_COLOR = 0x5865f2;
 
-const DIVIDER = '──────────';
+// Zero-width char for invisible spacer fields.
+const ZWS = '​';
+const SPACER_INLINE = { name: ZWS, value: ZWS, inline: true };
+const SPACER_FULL = { name: ZWS, value: ZWS, inline: false };
 
-// Build the Raid / Party / members description lines for one guild. Raid on
-// top, then party name, then the members header + one line per member with the
-// profile owner highlighted. guildEmoji prefixes the Raid line only when the
-// member is in BOTH guilds (else null). Read-only; never throws to the caller.
-async function buildPartyBlock(guild, userId, settings, guildEmoji) {
+// Build a full-width Raid/Party/members field for one guild. Field NAME = the
+// raid (raid on top); VALUE = party name + members, owner highlighted.
+// guildEmoji prefixes the raid name only when the member is in BOTH guilds.
+// Read-only; never throws to the caller.
+async function buildPartyField(guild, userId, settings, guildEmoji) {
   const prefix = guildEmoji ? `${guildEmoji} ` : '';
   try {
     const [members, parties, raids] = await Promise.all([
@@ -23,18 +26,14 @@ async function buildPartyBlock(guild, userId, settings, guildEmoji) {
     ]);
     const party = parties.find(p => (p.memberIds || []).includes(userId));
     if (!party) {
-      return [`${prefix}👥 **Party:** Not in a party`];
+      return { name: `${prefix}⚔️ Party`, value: 'Not in a party', inline: false };
     }
 
     const memberMap = new Map(members.map(m => [m.userId, m]));
     const raid = raids.find(r => (r.partyIds || []).includes(party.partyId));
     const raidName = raid ? raid.name : 'Unassigned';
 
-    const lines = [
-      `${prefix}⚔️ **Raid:** ${raidName}`,
-      `👥 **Party:** ${party.name}`,
-      '**Party members:**',
-    ];
+    const lines = [`👥 **Party:** ${party.name}`, '**Party members:**'];
     for (const id of party.memberIds || []) {
       const m = memberMap.get(id);
       const cls = m?.className || null;
@@ -43,9 +42,12 @@ async function buildPartyBlock(guild, userId, settings, guildEmoji) {
       const label = id === userId ? `**▶ ${name}**` : name;
       lines.push(`${icon} ${label} (${cls || 'No class'})`);
     }
-    return lines;
+
+    let value = lines.join('\n');
+    if (value.length > 1024) value = `${value.slice(0, 1021)}…`;
+    return { name: `${prefix}⚔️ Raid: ${raidName}`, value, inline: false };
   } catch {
-    return [`${prefix}👥 **Party:** —`];
+    return { name: `${prefix}⚔️ Party`, value: '—', inline: false };
   }
 }
 
@@ -117,15 +119,25 @@ module.exports = {
       const className = memberDoc?.className || null;
       const role = className ? classToRole(className, settings?.classRoles) : null;
 
-      // --- Description: richer labeled layout, line-precise -----------------
-      const lines = [];
+      // --- Build embed ------------------------------------------------------
+      const color = role ? (ROLE_COLOR[role] ?? DEFAULT_COLOR) : DEFAULT_COLOR;
+      const embed = new EmbedBuilder()
+        .setTitle(`👤 ${displayName}`)
+        .setColor(color)
+        .setThumbnail(avatarURL)
+        .setTimestamp();
 
-      // Line 2: Class • Power
+      // --- Summary stats as inline column fields (2-per-row via spacer) -----
+      // Row 1: Class | Power | spacer
       const classEmoji = className ? (ROLE_EMOJI[role] || '❔') : '❔';
       const powerText = power && power > 0 ? `${power}` : 'Unrated';
-      lines.push(`${classEmoji} **Class:** ${className || 'No class'}  •  ⚡ **Power:** ${powerText}`);
+      embed.addFields(
+        { name: `${classEmoji} Class`, value: className || 'No class', inline: true },
+        { name: '⚡ Power', value: powerText, inline: true },
+        SPACER_INLINE,
+      );
 
-      // Line 3: Guild • Status
+      // Row 2: Guild | Status | spacer
       let guildValue;
       if (guilds.length === 2) guildValue = 'Daddy + Mummy';
       else if (guilds.includes('daddy')) guildValue = 'Daddy';
@@ -135,40 +147,35 @@ module.exports = {
       if (!inServer) statusValue = '🔴 Left server';
       else if (onRoster) statusValue = '🟢 Active';
       else statusValue = '⚪ Not on roster';
-      lines.push(`🏰 **Guild:** ${guildValue}  •  📡 **Status:** ${statusValue}`);
+      embed.addFields(
+        { name: '🏰 Guild', value: guildValue, inline: true },
+        { name: '📡 Status', value: statusValue, inline: true },
+        SPACER_INLINE,
+      );
 
-      // Line 4: Kudos (all on one line)
+      // Row 3: Kudos | Rank | Today (natural 3-col) — only if kudos available
       if (kudos) {
-        const rankPart = kudos.total > 0 && kudos.rank
-          ? `🏅 Rank #${kudos.rank} of ${kudos.totalRecipients}`
+        const rankValue = kudos.total > 0 && kudos.rank
+          ? `#${kudos.rank} of ${kudos.totalRecipients}`
           : 'Unranked';
-        lines.push(`🙌 **Kudos:** ${kudos.total} received  •  ${rankPart}  •  📤 ${kudos.givenToday}/${kudosDb.DAILY_LIMIT} today`);
+        embed.addFields(
+          { name: '🙌 Kudos', value: `${kudos.total} received`, inline: true },
+          { name: '🏅 Rank', value: rankValue, inline: true },
+          { name: '📤 Today', value: `${kudos.givenToday}/${kudosDb.DAILY_LIMIT}`, inline: true },
+        );
       }
 
-      // Divider + party section(s), one block per guild.
+      // Breathing room before the party block(s).
+      embed.addFields(SPACER_FULL);
+
+      // --- Party/raid block(s): full-width fields, raid on top -------------
       const bothGuilds = guilds.length === 2;
-      if (guilds.length) {
-        lines.push(DIVIDER);
-        if (guilds.includes('daddy')) {
-          lines.push(...await buildPartyBlock('daddy', targetUser.id, settings, bothGuilds ? '👑' : null));
-        }
-        if (guilds.includes('mummy')) {
-          if (bothGuilds) lines.push(''); // blank separator between the two blocks
-          lines.push(...await buildPartyBlock('mummy', targetUser.id, settings, bothGuilds ? '💜' : null));
-        }
+      if (guilds.includes('daddy')) {
+        embed.addFields(await buildPartyField('daddy', targetUser.id, settings, bothGuilds ? '👑' : null));
       }
-
-      // 4096-char description cap — defensive truncate.
-      let description = lines.join('\n');
-      if (description.length > 4096) description = `${description.slice(0, 4093)}…`;
-
-      const color = role ? (ROLE_COLOR[role] ?? DEFAULT_COLOR) : DEFAULT_COLOR;
-      const embed = new EmbedBuilder()
-        .setTitle(`👤 ${displayName}`)
-        .setColor(color)
-        .setThumbnail(avatarURL)
-        .setDescription(description)
-        .setTimestamp();
+      if (guilds.includes('mummy')) {
+        embed.addFields(await buildPartyField('mummy', targetUser.id, settings, bothGuilds ? '💜' : null));
+      }
 
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
