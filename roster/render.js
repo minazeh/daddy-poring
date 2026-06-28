@@ -1,9 +1,11 @@
 // ---------------------------------------------------------------------------
 // Guild-roster IMAGE rendering for /guildroster (canvas / @napi-rs/canvas).
 //
-// ONE IMAGE PER RAID GROUP (Conrad's explicit choice), Main field then Sub,
-// plus an "Unassigned Parties" image per field for non-empty unassigned parties.
-// Each image is a PNG Buffer the command wraps in an AttachmentBuilder.
+// ONE COMBINED IMAGE PER GUILD (Conrad's choice): a single tall PNG with all
+// sections stacked vertically — Main field raid groups (by position) → Main
+// field Unassigned Parties → Sub field raid groups → Sub field Unassigned
+// Parties. Each section = a header band + that section's party cards in a fixed
+// 3-column grid. A top title band shows the guild label.
 //
 // Aesthetic mirrors the web app's dark-neon party board: dark indigo page,
 // indigo card accents, light text. A party MISSING a required class renders on
@@ -77,7 +79,8 @@ const ROLE_BADGE = {
 // Palette (dark neon, web-app parity).
 const COL = {
   page:        '#10101f',
-  headerBand:  '#1e1b4b', // indigo-950
+  titleBand:   '#312e81', // indigo-900 — top guild band, slightly brighter
+  headerBand:  '#1e1b4b', // indigo-950 — section bands
   accent:      '#6366f1', // indigo-500
   cardBg:      '#161634',
   cardBorder:  '#312e81', // indigo-900
@@ -88,12 +91,19 @@ const COL = {
   warn:        '#fca5a5', // red-300 for the MISSING flag
 };
 
-const MAX_IMAGES_PER_MESSAGE = 10;
 const MAX_BYTES = 8 * 1024 * 1024; // 8MB Discord attachment cap
+const MAX_HEIGHT = 12000;          // pathological-height guard (won't trigger on real data)
 
 // Layout constants.
 const MARGIN = 20;
-const HEADER_H = 60;
+const COLS = 3;                    // fixed 3-column grid throughout
+const TITLE_BAND_H = 64;           // top guild band
+const SECTION_H = 44;              // per-section header band
+const SECTION_HEADER_GAP = 12;     // gap between a section header and its grid
+const SECTION_GAP = 24;            // gap between sections
+const EMPTY_NOTE_H = 34;           // height reserved for an "(all parties empty)" note
+const OVERFLOW_NOTE_H = 44;        // height reserved for the overflow note
+
 const CARD_W = 330;
 const CARD_GAP = 16;
 const CARD_PAD = 14;
@@ -175,21 +185,10 @@ function truncToWidth(ctx, text, maxW) {
   return `${s}…`;
 }
 
-function slug(s) {
-  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'group';
-}
-
 // Height of one party card.
 function cardHeight(party) {
   const memberCount = (party.memberIds || []).length;
   return CARD_PAD + TITLE_H + MISSING_H + CARD_PAD + memberCount * ROW_H;
-}
-
-// Responsive column count for N cards (1–3).
-function colsFor(n) {
-  if (n <= 1) return 1;
-  if (n === 2) return 2;
-  return 3;
 }
 
 function paintPage(ctx, w, h) {
@@ -197,16 +196,17 @@ function paintPage(ctx, w, h) {
   ctx.fillRect(0, 0, w, h);
 }
 
-function drawHeader(ctx, w, title) {
-  ctx.fillStyle = COL.headerBand;
-  ctx.fillRect(0, 0, w, HEADER_H);
+// A full-width header band at (y) of height (h) with title text.
+function drawBand(ctx, y, w, h, title, fontSize, bandColor) {
+  ctx.fillStyle = bandColor;
+  ctx.fillRect(0, y, w, h);
   ctx.fillStyle = COL.accent; // indigo accent underline
-  ctx.fillRect(0, HEADER_H - 3, w, 3);
+  ctx.fillRect(0, y + h - 3, w, 3);
   ctx.fillStyle = COL.text;
-  ctx.font = fBold(20);
+  ctx.font = fBold(fontSize);
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
-  ctx.fillText(truncToWidth(ctx, title, w - MARGIN * 2), MARGIN, HEADER_H / 2);
+  ctx.fillText(truncToWidth(ctx, title, w - MARGIN * 2), MARGIN, y + Math.round(h / 2));
   ctx.textBaseline = 'top';
 }
 
@@ -276,70 +276,37 @@ function drawCard(ctx, x, y, h, party, gctx) {
 }
 
 // ---------------------------------------------------------------------------
-// Render one raid (or Unassigned group) image → PNG Buffer.
-// `parties` = non-empty parties (already filtered/ordered).
+// Section layout — pre-computes the 3-col grid rows for a section so the
+// measure pass and the draw pass agree on heights.
+//   { title, rows:[{cells:[{p,h}], h}], gridH, isEmpty }
 // ---------------------------------------------------------------------------
-function renderGroupImage(title, parties, gctx) {
-  // Empty (all parties empty) → still emit a small image with a note.
+function layoutSection(title, parties) {
   if (!parties.length) {
-    const w = MARGIN * 2 + CARD_W;
-    const h = HEADER_H + MARGIN + 60;
-    const canvas = createCanvas(w, h);
-    const ctx = canvas.getContext('2d');
-    paintPage(ctx, w, h);
-    drawHeader(ctx, w, title);
-    ctx.fillStyle = COL.muted;
-    ctx.font = fReg(15);
-    ctx.textBaseline = 'top';
-    ctx.textAlign = 'left';
-    ctx.fillText('(all parties empty)', MARGIN, HEADER_H + MARGIN + 8);
-    return canvas.toBuffer('image/png');
+    return { title, rows: [], gridH: EMPTY_NOTE_H, isEmpty: true };
   }
-
-  const cols = colsFor(parties.length);
   const heights = parties.map(cardHeight);
-
-  // Group into rows; each row's height = max card height in the row.
   const rows = [];
-  for (let i = 0; i < parties.length; i += cols) {
-    const slice = parties.slice(i, i + cols).map((p, j) => ({ p, h: heights[i + j] }));
+  for (let i = 0; i < parties.length; i += COLS) {
+    const slice = parties.slice(i, i + COLS).map((p, j) => ({ p, h: heights[i + j] }));
     rows.push({ cells: slice, h: Math.max(...slice.map(c => c.h)) });
   }
-
-  const width = MARGIN * 2 + cols * CARD_W + (cols - 1) * CARD_GAP;
   const gridH = rows.reduce((sum, r) => sum + r.h, 0) + (rows.length - 1) * CARD_GAP;
-  const height = HEADER_H + MARGIN + gridH + MARGIN;
+  return { title, rows, gridH, isEmpty: false };
+}
 
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext('2d');
-  paintPage(ctx, width, height);
-  drawHeader(ctx, width, title);
-
-  let y = HEADER_H + MARGIN;
-  for (const row of rows) {
-    let x = MARGIN;
-    for (const cell of row.cells) {
-      drawCard(ctx, x, y, cell.h, cell.p, gctx);
-      x += CARD_W + CARD_GAP;
-    }
-    y += row.h + CARD_GAP;
-  }
-
-  return canvas.toBuffer('image/png');
+function sectionHeight(sec) {
+  return SECTION_H + SECTION_HEADER_GAP + sec.gridH;
 }
 
 // ---------------------------------------------------------------------------
-// Build all images for a guild. Returns an array of:
-//   { filename, title, buffer }
-// Empty state (nothing to show) returns [] — the command sends a text reply.
+// Collect the ordered sections for a guild:
+//   Main raids → Main Unassigned → Sub raids → Sub Unassigned.
+// Returns [] when there is nothing to show (→ empty-state text reply).
 // ---------------------------------------------------------------------------
-function buildGuildImages(guild, data) {
+function collectSections(guild, data) {
   const { parties = [], raidGroups = [] } = data;
-  const gctx = buildContext(data);
   const partyMap = new Map(parties.map(p => [p.partyId, p]));
-  const guildLabel = guild === 'mummy' ? 'Mummy' : 'Daddy';
-
-  const images = [];
+  const sections = [];
 
   for (const field of ['main', 'sub']) {
     const fieldLabel = field === 'main' ? 'Main Field' : 'Sub Field';
@@ -349,58 +316,111 @@ function buildGuildImages(guild, data) {
     for (const raid of raids) {
       const ids = raid.partyIds || [];
       ids.forEach(id => assigned.add(id));
-      const resolved = ids.map(id => partyMap.get(id)).filter(Boolean);
-      const nonEmpty = resolved.filter(p => !isEmptyParty(p));
-      const title = `${guildLabel} · ${fieldLabel} · ${raid.name}`;
-      images.push({
-        filename: `raid-${slug(`${field}-${raid.name}`)}.png`,
-        title,
-        buffer: renderGroupImage(title, nonEmpty, gctx),
-      });
+      const nonEmpty = ids.map(id => partyMap.get(id)).filter(Boolean).filter(p => !isEmptyParty(p));
+      sections.push(layoutSection(`${fieldLabel} · ${raid.name}`, nonEmpty));
     }
 
-    // Unassigned (non-empty) parties for this field.
     const unassigned = parties
       .filter(p => p.field === field && !assigned.has(p.partyId) && !isEmptyParty(p))
       .sort((a, b) => (a.position || 0) - (b.position || 0));
 
     if (unassigned.length) {
-      const title = `${guildLabel} · ${fieldLabel} · Unassigned Parties`;
-      images.push({
-        filename: `raid-${slug(`${field}-unassigned`)}.png`,
-        title,
-        buffer: renderGroupImage(title, unassigned, gctx),
-      });
+      sections.push(layoutSection(`${fieldLabel} · Unassigned Parties`, unassigned));
     }
   }
 
-  return images;
+  return sections;
 }
 
-// Split images into chunks of ≤10 (Discord attachments-per-message cap).
-function chunkImages(images, size = MAX_IMAGES_PER_MESSAGE) {
-  const chunks = [];
-  for (let i = 0; i < images.length; i += size) {
-    chunks.push(images.slice(i, i + size));
+// ---------------------------------------------------------------------------
+// Build ONE combined PNG for a guild.
+// Returns { filename, buffer } or null (empty state → command sends text).
+// ---------------------------------------------------------------------------
+function buildGuildImage(guild, data) {
+  const gctx = buildContext(data);
+  const guildLabel = guild === 'mummy' ? 'Mummy' : 'Daddy';
+
+  const allSections = collectSections(guild, data);
+  if (!allSections.length) return null; // empty state
+
+  const width = MARGIN * 2 + COLS * CARD_W + (COLS - 1) * CARD_GAP;
+
+  // Measure pass + overflow guard. Keep adding sections until the next one
+  // would blow past MAX_HEIGHT (pathological only — real data is ~3000px).
+  let total = TITLE_BAND_H + MARGIN;
+  const kept = [];
+  let overflow = false;
+  for (const sec of allSections) {
+    const h = sectionHeight(sec) + SECTION_GAP;
+    if (kept.length && total + h + MARGIN > MAX_HEIGHT) { overflow = true; break; }
+    total += h;
+    kept.push(sec);
   }
-  return chunks;
+  if (overflow) total += OVERFLOW_NOTE_H;
+  total += MARGIN;
+
+  const canvas = createCanvas(width, total);
+  const ctx = canvas.getContext('2d');
+  paintPage(ctx, width, total);
+
+  // Top guild title band.
+  drawBand(ctx, 0, width, TITLE_BAND_H, `${guildLabel} Roster`, 26, COL.titleBand);
+
+  let y = TITLE_BAND_H + MARGIN;
+  for (const sec of kept) {
+    drawBand(ctx, y, width, SECTION_H, sec.title, 18, COL.headerBand);
+    y += SECTION_H + SECTION_HEADER_GAP;
+
+    if (sec.isEmpty) {
+      ctx.fillStyle = COL.muted;
+      ctx.font = fReg(15);
+      ctx.textBaseline = 'top';
+      ctx.textAlign = 'left';
+      ctx.fillText('(all parties empty)', MARGIN, y + 4);
+      y += sec.gridH;
+    } else {
+      for (let i = 0; i < sec.rows.length; i++) {
+        const row = sec.rows[i];
+        let x = MARGIN;
+        for (const cell of row.cells) {
+          drawCard(ctx, x, y, cell.h, cell.p, gctx);
+          x += CARD_W + CARD_GAP;
+        }
+        y += row.h;
+        if (i < sec.rows.length - 1) y += CARD_GAP;
+      }
+    }
+    y += SECTION_GAP;
+  }
+
+  if (overflow) {
+    ctx.fillStyle = COL.warn;
+    ctx.font = fBold(15);
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    const dropped = allSections.length - kept.length;
+    ctx.fillText(`… ${dropped} more section(s) not shown (image height capped).`, MARGIN, y + 4);
+  }
+
+  const buffer = canvas.toBuffer('image/png');
+  return { filename: `roster-${guild}.png`, buffer };
 }
 
 module.exports = {
-  buildGuildImages,
-  chunkImages,
-  renderGroupImage,
+  buildGuildImage,
   buildContext,
+  collectSections,
   // pure helpers (tests / sim)
   classToRole,
   computeMissing,
   memberRow,
   isEmptyParty,
+  cardHeight,
   fontsRegistered: () => fontsRegistered,
   fontError: () => fontErr,
   DEFAULT_CLASS_ROLES,
   DEFAULT_REQUIRED_CLASSES,
   DEFAULT_PARTY_SIZE,
-  MAX_IMAGES_PER_MESSAGE,
   MAX_BYTES,
+  MAX_HEIGHT,
 };
