@@ -1,54 +1,52 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const kudosDb = require('../kudos/db');
 const rosterDb = require('../roster/db');
-const { classToRole, ROLE_EMOJI } = require('../roster/roles');
+const kudosDb = require('../kudos/db');
 
-// Role-based accent colors (match the roster image badges).
-const ROLE_COLOR = { tank: 0x3b82f6, healer: 0x22c55e, dps: 0xf97316 };
-const DEFAULT_COLOR = 0x5865f2;
+// Clean green accent.
+const COLOR = 0x57F287;
 
-// Zero-width char for invisible spacer fields.
-const ZWS = '​';
-const SPACER_INLINE = { name: ZWS, value: ZWS, inline: true };
-const SPACER_FULL = { name: ZWS, value: ZWS, inline: false };
+// Resolve a guild's party context for a user: the party they're in, its raid
+// name (or "Unassigned"), and the ordered member docs. Read-only; never throws.
+// Returns { party, raidName, members[] } or null when not in a party.
+async function resolveGuildParty(guild, userId) {
+  const [members, parties, raids] = await Promise.all([
+    rosterDb.getMembers(guild),
+    rosterDb.getParties(guild),
+    rosterDb.getRaidGroups(guild),
+  ]);
+  const party = parties.find(p => (p.memberIds || []).includes(userId));
+  if (!party) return null;
+  const raid = raids.find(r => (r.partyIds || []).includes(party.partyId));
+  const memberMap = new Map(members.map(m => [m.userId, m]));
+  return { party, raidName: raid ? raid.name : 'Unassigned', memberMap };
+}
 
-// Build a full-width Raid/Party/members field for one guild. Field NAME = the
-// raid (raid on top); VALUE = party name + members, owner highlighted.
-// guildEmoji prefixes the raid name only when the member is in BOTH guilds.
-// Read-only; never throws to the caller.
-async function buildPartyField(guild, userId, settings, guildEmoji) {
-  const prefix = guildEmoji ? `${guildEmoji} ` : '';
-  try {
-    const [members, parties, raids] = await Promise.all([
-      rosterDb.getMembers(guild),
-      rosterDb.getParties(guild),
-      rosterDb.getRaidGroups(guild),
-    ]);
-    const party = parties.find(p => (p.memberIds || []).includes(userId));
-    if (!party) {
-      return { name: `${prefix}⚔️ Party`, value: 'Not in a party', inline: false };
+// "Party Name (RaidName)" for a resolved party context.
+function partyNameValue(ctx) {
+  if (!ctx) return '—';
+  return `${ctx.party.name} (${ctx.raidName})`;
+}
+
+// Numbered member list "<n>. <displayName> - <className>", slot order, 1024-cap.
+function partyMembersValue(ctx) {
+  if (!ctx) return '—';
+  const ids = ctx.party.memberIds || [];
+  if (!ids.length) return '—';
+  const lines = [];
+  let len = 0;
+  for (let i = 0; i < ids.length; i++) {
+    const m = ctx.memberMap.get(ids[i]);
+    const name = m?.displayName || m?.username || 'Unknown';
+    const cls = m?.className || 'N/A';
+    const line = `${i + 1}. ${name} - ${cls}`;
+    if (len + line.length + 1 > 1000) { // < 1024 cap, room for trailer
+      lines.push(`+${ids.length - i} more`);
+      break;
     }
-
-    const memberMap = new Map(members.map(m => [m.userId, m]));
-    const raid = raids.find(r => (r.partyIds || []).includes(party.partyId));
-    const raidName = raid ? raid.name : 'Unassigned';
-
-    const lines = [`👥 **Party:** ${party.name}`, '**Party members:**'];
-    for (const id of party.memberIds || []) {
-      const m = memberMap.get(id);
-      const cls = m?.className || null;
-      const icon = ROLE_EMOJI[classToRole(cls, settings?.classRoles)] || ROLE_EMOJI.dps;
-      const name = m?.displayName || m?.username || 'Unknown';
-      const label = id === userId ? `**▶ ${name}**` : name;
-      lines.push(`${icon} ${label} (${cls || 'No class'})`);
-    }
-
-    let value = lines.join('\n');
-    if (value.length > 1024) value = `${value.slice(0, 1021)}…`;
-    return { name: `${prefix}⚔️ Raid: ${raidName}`, value, inline: false };
-  } catch {
-    return { name: `${prefix}⚔️ Party`, value: '—', inline: false };
+    lines.push(line);
+    len += line.length + 1;
   }
+  return lines.join('\n');
 }
 
 module.exports = {
@@ -62,7 +60,7 @@ module.exports = {
         .setRequired(false),
     ),
 
-  // Public (not ephemeral). Everyone can use it. Degrades per-source.
+  // Public (not ephemeral). Everyone can use it. Degrades gracefully.
   async execute(interaction) {
     await interaction.deferReply(); // public
 
@@ -71,17 +69,38 @@ module.exports = {
       const targetUser = interaction.options.getUser('user') ?? interaction.user;
 
       // --- Discord natives (with left-guild fetch fallback) -----------------
+      const username = targetUser.username;
       let displayName = targetUser.globalName || targetUser.username;
       let avatarURL = targetUser.displayAvatarURL();
-      let inServer = false;
+      let joinedAt = null;
       try {
         const member = await interaction.guild.members.fetch(targetUser.id);
-        inServer = true;
         displayName = member.displayName;
         avatarURL = member.displayAvatarURL();
+        joinedAt = member.joinedAt;
       } catch {
-        // Left the server — use the user's global identity.
+        // Left the server — use the user's global identity; no join date.
       }
+
+      // --- Roster: class, power, guild membership, party contexts -----------
+      let memberDoc = null;
+      let power = null;
+      const guilds = []; // 'daddy' and/or 'mummy'
+      if (rosterDb.isReady()) {
+        try {
+          memberDoc = await rosterDb.getMember(targetUser.id);
+          power = await rosterDb.getPower(targetUser.id);
+          if (memberDoc?.isMain) guilds.push('daddy');
+          if (memberDoc?.isSub) guilds.push('mummy');
+        } catch (e) {
+          console.warn('[profile] roster lookup failed:', e?.message || e);
+        }
+      }
+
+      // In-game Name = server nickname; fall back to roster displayName, else username.
+      const ign = displayName || memberDoc?.displayName || username;
+      const jobClass = memberDoc?.className || 'N/A';
+      const powerText = power && power > 0 ? `${power}` : 'Unrated';
 
       // --- Kudos (graceful if disabled) ------------------------------------
       let kudos = null; // { total, rank, totalRecipients, givenToday }
@@ -95,89 +114,69 @@ module.exports = {
         }
       }
 
-      // --- Roster / class / power / guild membership (graceful if disabled) -
-      let memberDoc = null;
-      let settings = null;
-      let power = null; // null = couldn't read; number = rating (0 = unrated)
-      const guilds = []; // 'daddy' and/or 'mummy'
-      const rosterReady = rosterDb.isReady();
-      if (rosterReady) {
+      // Primary guild for the 3-col row (Daddy preferred), secondary for both.
+      const primaryGuild = guilds.includes('daddy') ? 'daddy' : (guilds.includes('mummy') ? 'mummy' : null);
+      const secondaryGuild = guilds.length === 2 ? 'mummy' : null;
+
+      let primaryCtx = null;
+      let secondaryCtx = null;
+      if (rosterDb.isReady()) {
         try {
-          [memberDoc, settings] = await Promise.all([
-            rosterDb.getMember(targetUser.id),
-            rosterDb.getSettings(),
-          ]);
-          power = await rosterDb.getPower(targetUser.id);
-          if (memberDoc?.isMain) guilds.push('daddy');
-          if (memberDoc?.isSub) guilds.push('mummy');
+          if (primaryGuild) primaryCtx = await resolveGuildParty(primaryGuild, targetUser.id);
+          if (secondaryGuild) secondaryCtx = await resolveGuildParty(secondaryGuild, targetUser.id);
         } catch (e) {
-          console.warn('[profile] roster lookup failed:', e?.message || e);
+          console.warn('[profile] party resolution failed:', e?.message || e);
         }
       }
 
-      const onRoster = !!memberDoc;
-      const className = memberDoc?.className || null;
-      const role = className ? classToRole(className, settings?.classRoles) : null;
-
       // --- Build embed ------------------------------------------------------
-      const color = role ? (ROLE_COLOR[role] ?? DEFAULT_COLOR) : DEFAULT_COLOR;
       const embed = new EmbedBuilder()
-        .setTitle(`👤 ${displayName}`)
-        .setColor(color)
-        .setThumbnail(avatarURL)
-        .setTimestamp();
+        .setTitle('Your Profile')
+        .setColor(COLOR)
+        .setThumbnail(avatarURL);
 
-      // --- Summary stats as inline column fields (2-per-row via spacer) -----
-      // Row 1: Class | Power | spacer
-      const classEmoji = className ? (ROLE_EMOJI[role] || '❔') : '❔';
-      const powerText = power && power > 0 ? `${power}` : 'Unrated';
       embed.addFields(
-        { name: `${classEmoji} Class`, value: className || 'No class', inline: true },
-        { name: '⚡ Power', value: powerText, inline: true },
-        SPACER_INLINE,
+        { name: 'Username', value: username, inline: false },
+        { name: 'In-game Name', value: ign, inline: false },
       );
 
-      // Row 2: Guild | Status | spacer
-      let guildValue;
-      if (guilds.length === 2) guildValue = 'Daddy + Mummy';
-      else if (guilds.includes('daddy')) guildValue = 'Daddy';
-      else if (guilds.includes('mummy')) guildValue = 'Mummy';
-      else guildValue = 'Not on a roster';
-      let statusValue;
-      if (!inServer) statusValue = '🔴 Left server';
-      else if (onRoster) statusValue = '🟢 Active';
-      else statusValue = '⚪ Not on roster';
-      embed.addFields(
-        { name: '🏰 Guild', value: guildValue, inline: true },
-        { name: '📡 Status', value: statusValue, inline: true },
-        SPACER_INLINE,
-      );
-
-      // Row 3: Kudos | Rank | Today (natural 3-col) — only if kudos available
+      // Kudos row (3 cols) — comes BEFORE party/class/power. Only when available.
       if (kudos) {
         const rankValue = kudos.total > 0 && kudos.rank
           ? `#${kudos.rank} of ${kudos.totalRecipients}`
           : 'Unranked';
         embed.addFields(
-          { name: '🙌 Kudos', value: `${kudos.total} received`, inline: true },
-          { name: '🏅 Rank', value: rankValue, inline: true },
-          { name: '📤 Today', value: `${kudos.givenToday}/${kudosDb.DAILY_LIMIT}`, inline: true },
+          { name: 'Kudos', value: `${kudos.total} received`, inline: true },
+          { name: 'Rank', value: rankValue, inline: true },
+          { name: 'Given Today', value: `${kudos.givenToday}/${kudosDb.DAILY_LIMIT}`, inline: true },
         );
       }
 
-      // Breathing room before the party block(s).
-      embed.addFields(SPACER_FULL);
+      embed.addFields(
+        // 3-col row: Party Name | Job Class | Power
+        { name: 'Party Name', value: partyNameValue(primaryCtx), inline: true },
+        { name: 'Job Class', value: jobClass, inline: true },
+        { name: 'Power', value: powerText, inline: true },
+        { name: 'Party Members', value: partyMembersValue(primaryCtx), inline: false },
+      );
 
-      // --- Party/raid block(s): full-width fields, raid on top -------------
-      const bothGuilds = guilds.length === 2;
-      if (guilds.includes('daddy')) {
-        embed.addFields(await buildPartyField('daddy', targetUser.id, settings, bothGuilds ? '👑' : null));
-      }
-      if (guilds.includes('mummy')) {
-        embed.addFields(await buildPartyField('mummy', targetUser.id, settings, bothGuilds ? '💜' : null));
+      // Both-guilds: append the secondary guild's party block.
+      if (secondaryGuild) {
+        embed.addFields(
+          { name: 'Party Name (Mummy)', value: partyNameValue(secondaryCtx), inline: false },
+          { name: 'Party Members (Mummy)', value: partyMembersValue(secondaryCtx), inline: false },
+        );
       }
 
-      await interaction.editReply({ embeds: [embed] });
+      const joinDate = joinedAt ? new Date(joinedAt).toDateString() : 'Unknown';
+      embed.setFooter({ text: `Member Since: ${joinDate}`, iconURL: avatarURL });
+      embed.setTimestamp();
+
+      await interaction.editReply({
+        content: `Hi <@${targetUser.id}>: Here is your profile:`,
+        embeds: [embed],
+        allowedMentions: { parse: [] }, // render the mention without pinging
+      });
     } catch (err) {
       console.warn('[profile] Failed:', err?.message || err);
       await interaction.editReply("Couldn't load that profile right now — please try again in a moment.");
