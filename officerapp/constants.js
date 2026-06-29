@@ -39,10 +39,20 @@ const FIELDS = {
   WHY_FIT:        'whyfit',
 };
 
-// Officer role IDs granted on approval. Daddy and Mummy are distinct tiers.
+// Officer role IDs — used to GATE /syncmembers, /memberclasses, and officer
+// command visibility in /help. NOT the roles granted by /jobad approval (that
+// is JOBAD_APPROVAL_ROLE_IDS below). Leave these as-is.
 const OFFICER_ROLE_IDS = {
   DADDY: '1518076612787048548',
   MUMMY: '1518666580903329822',
+};
+
+// Role IDs GRANTED when leadership approves an officer application via /jobad.
+// Separate from OFFICER_ROLE_IDS so changing the granted role never affects the
+// command-gating above. Daddy and Mummy are distinct tiers.
+const JOBAD_APPROVAL_ROLE_IDS = {
+  DADDY: '1520964030385098872',
+  MUMMY: '1520964523224469525',
 };
 
 module.exports = {
@@ -52,4 +62,5 @@ module.exports = {
   JOB_AD_CHANNEL_ID,
   OFFICER_APPLICANT_ROLE_IDS,
   OFFICER_ROLE_IDS,
+  JOBAD_APPROVAL_ROLE_IDS,
 };

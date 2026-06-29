@@ -14,10 +14,12 @@ const {
   OFFICER_APP_CHANNEL_ID,
   JOB_AD_CHANNEL_ID,
   OFFICER_APPLICANT_ROLE_IDS,
-  OFFICER_ROLE_IDS,
+  JOBAD_APPROVAL_ROLE_IDS,
 } = require('./constants');
 // REVIEW gate reuses the guild-app reviewer roles.
 const { REVIEWER_ROLE_IDS } = require('../guildapp/constants');
+// Job-ad persistence (read+write). Degrades gracefully when not ready.
+const db = require('./db');
 
 // Polite copy — kept here so command + handlers agree.
 const COPY = {
@@ -45,6 +47,53 @@ function canApply(interaction) {
 }
 
 // ---------------------------------------------------------------------------
+// Shared helpers.
+// ---------------------------------------------------------------------------
+
+// Render an applicant name list, capping near the 1024 field-value limit with a
+// "+X more" trailer so a huge list never blows the embed.
+function renderApplicantList(applicants) {
+  if (!Array.isArray(applicants) || applicants.length === 0) return 'No applicants yet.';
+  const MAX = 1000; // < 1024 field cap, leaves room for the trailer
+  const names = applicants.map(a => a.name || `<@${a.userId}>`);
+  const out = [];
+  let len = 0;
+  for (let i = 0; i < names.length; i++) {
+    const line = names[i];
+    if (len + line.length + 1 > MAX) {
+      out.push(`…+${names.length - i} more`);
+      break;
+    }
+    out.push(line);
+    len += line.length + 1;
+  }
+  return out.join('\n');
+}
+
+// Build the job-ad embed identically at create time and on every applicant
+// update. `doc` carries title/description/posterName/applicants.
+function buildJobAdEmbed(doc, guildName, guildIcon) {
+  const adDescription = (doc.description || '—') +
+    '\n\n**How to apply:** Click the **Apply** button below to submit your application.';
+
+  const applicants = Array.isArray(doc.applicants) ? doc.applicants : [];
+  const count = applicants.length;
+
+  return new EmbedBuilder()
+    .setAuthor({ name: `${guildName} • Recruitment`, iconURL: guildIcon })
+    .setTitle(`📌 ${doc.title || 'Job Ad'}`)
+    .setColor(0xC9A227) // refined gold accent
+    .setDescription(adDescription)
+    .addFields(
+      { name: '📋 Posted by', value: doc.posterName || '—', inline: true },
+      { name: `👥 Applicants (${count})`, value: renderApplicantList(applicants), inline: false },
+    )
+    .setThumbnail(guildIcon ?? null)
+    .setFooter({ text: guildName, iconURL: guildIcon })
+    .setTimestamp(doc.createdAt ? new Date(doc.createdAt) : new Date());
+}
+
+// ---------------------------------------------------------------------------
 // 1. Job-ad modal submit (jobad:modal) -> build a job-ad embed and post it to
 //    #job-ad with an Apply button. Persistence is via the message id itself:
 //    the Apply button's customId carries the job-ad message's OWN id, so no
@@ -58,17 +107,18 @@ async function handleJobAdModalSubmit(interaction) {
   const guildIcon = interaction.guild?.iconURL() ?? undefined;
   const guildName = interaction.guild?.name ?? 'Recruitment';
 
-  const adDescription = (description || '—') +
-    '\n\n**How to apply:** Click the **Apply** button below to submit your application.';
+  // Capture the poster's server nickname (falls back to username).
+  const posterName = interaction.member?.displayName ?? interaction.user.username;
 
-  const embed = new EmbedBuilder()
-    .setAuthor({ name: `${guildName} • Recruitment`, iconURL: guildIcon })
-    .setTitle(`📌 ${title || 'Job Ad'}`)
-    .setColor(0xC9A227) // refined gold accent
-    .setDescription(adDescription)
-    .setThumbnail(guildIcon ?? null)
-    .setFooter({ text: guildName, iconURL: guildIcon })
-    .setTimestamp();
+  // The doc shape buildJobAdEmbed consumes — applicants empty at post time.
+  const adDoc = {
+    title,
+    description,
+    posterName,
+    applicants: [],
+    createdAt: new Date(),
+  };
+  const embed = buildJobAdEmbed(adDoc, guildName, guildIcon);
 
   // Temporary Apply button — customId gets the real message id baked in after send.
   const tempRow = new ActionRowBuilder().addComponents(
@@ -95,8 +145,9 @@ async function handleJobAdModalSubmit(interaction) {
     return;
   }
 
+  let msg = null;
   try {
-    const msg = await channel.send({ embeds: [embed], components: [tempRow] });
+    msg = await channel.send({ embeds: [embed], components: [tempRow] });
 
     // Bake the message's own id into the Apply button's customId.
     const finalRow = new ActionRowBuilder().addComponents(
@@ -113,6 +164,21 @@ async function handleJobAdModalSubmit(interaction) {
       ephemeral: true,
     });
     return;
+  }
+
+  // Persist the ad (best-effort) so the applicant list survives restarts. If the
+  // DB is down the ad still works — the Apply button is customId-based.
+  try {
+    await db.createJobAd({
+      _id: msg.id,
+      channelId: msg.channel.id,
+      posterId: interaction.user.id,
+      posterName,
+      title,
+      description,
+    });
+  } catch (err) {
+    console.warn('[jobad] Could not persist job ad (continuing — flow still works):', err?.message || err);
   }
 
   await interaction.reply({
@@ -169,14 +235,29 @@ async function handleOfficerModalSubmit(interaction, jobAdMessageId) {
   const ign = interaction.fields.getTextInputValue(FIELDS.IGN).trim();
   const whyFit = interaction.fields.getTextInputValue(FIELDS.WHY_FIT).trim();
 
-  // Read the job-ad Title from the fetched message. If the ad is gone, stop.
+  // Resolve the job title. Prefer the persisted doc (survives restarts; the
+  // Apply button's customId carries jobAdMessageId so no in-memory state is
+  // needed). Fall back to reading the ad message's embed title if the DB is
+  // down or the doc is missing (e.g. an ad posted before persistence existed).
   let jobTitle = null;
-  try {
-    const channel = await interaction.client.channels.fetch(JOB_AD_CHANNEL_ID);
-    const adMsg = await channel.messages.fetch(jobAdMessageId);
-    jobTitle = adMsg.embeds?.[0]?.title ?? null;
-  } catch (err) {
-    console.warn('[officerapp] Could not fetch job ad for application:', err?.message || err);
+  let adDoc = null;
+  if (db.isReady()) {
+    try {
+      adDoc = await db.getJobAd(jobAdMessageId);
+      if (adDoc?.title) jobTitle = adDoc.title;
+    } catch (err) {
+      console.warn('[officerapp] Could not read job ad doc:', err?.message || err);
+    }
+  }
+  if (!jobTitle) {
+    try {
+      const channel = await interaction.client.channels.fetch(JOB_AD_CHANNEL_ID);
+      const adMsg = await channel.messages.fetch(jobAdMessageId);
+      const t = adMsg.embeds?.[0]?.title ?? null;
+      jobTitle = t ? t.replace(/^📌\s*/, '') : null; // strip the pin prefix
+    } catch (err) {
+      console.warn('[officerapp] Could not fetch job ad for application:', err?.message || err);
+    }
   }
 
   if (!jobTitle) {
@@ -243,6 +324,32 @@ async function handleOfficerModalSubmit(interaction, jobAdMessageId) {
     return;
   }
 
+  // Persist this applicant (dedupe by userId) + refresh the live applicant list
+  // in the #job-ad embed. Best-effort: if the DB is down or the edit fails, the
+  // application was still posted for review — just log and carry on.
+  if (db.isReady()) {
+    try {
+      const applicantName = interaction.member?.displayName ?? interaction.user.username;
+      const updated = await db.addApplicant(jobAdMessageId, {
+        userId: interaction.user.id,
+        name: applicantName,
+        ign,
+        appliedAt: new Date(),
+      });
+      if (updated) {
+        const guildIcon = interaction.guild?.iconURL() ?? undefined;
+        const guildName = interaction.guild?.name ?? 'Recruitment';
+        const adEmbed = buildJobAdEmbed(updated, guildName, guildIcon);
+        const adChannel = await interaction.client.channels.fetch(JOB_AD_CHANNEL_ID);
+        const adMsg = await adChannel.messages.fetch(jobAdMessageId);
+        // Edit embeds only — omitting components preserves the Apply button.
+        await adMsg.edit({ embeds: [adEmbed] });
+      }
+    } catch (err) {
+      console.warn('[officerapp] Could not update job-ad applicant list (application still submitted):', err?.message || err);
+    }
+  }
+
   await interaction.reply({ content: COPY.SUBMIT_CONFIRM, ephemeral: true });
 }
 
@@ -257,14 +364,14 @@ const OUTCOME = {
     statusText: '✅ Approved — Daddy',
     color:      0x2ecc71,
     dmText:     COPY.APPROVE_DM,
-    roleId:     OFFICER_ROLE_IDS.DADDY,
+    roleId:     JOBAD_APPROVAL_ROLE_IDS.DADDY,
     approval:   true,
   },
   mummy: {
     statusText: '✅ Approved — Mummy',
     color:      0x2ecc71,
     dmText:     COPY.APPROVE_DM,
-    roleId:     OFFICER_ROLE_IDS.MUMMY,
+    roleId:     JOBAD_APPROVAL_ROLE_IDS.MUMMY,
     approval:   true,
   },
   reject: {
@@ -335,18 +442,9 @@ async function handleReviewButton(interaction, action, applicantUserId, jobAdMes
     }
   }
 
-  // On approval, delete the job-ad message so it stops accepting applicants.
-  // Reject leaves the ad open for others.
-  if (outcome.approval) {
-    try {
-      const adChannel = await interaction.client.channels.fetch(JOB_AD_CHANNEL_ID);
-      const adMsg = await adChannel.messages.fetch(jobAdMessageId);
-      await adMsg.delete();
-    } catch (err) {
-      // Already gone / can't delete — no-op (best effort).
-      console.warn(`[officerapp] Could not delete job ad ${jobAdMessageId}:`, err?.message || err);
-    }
-  }
+  // Note: the job ad is intentionally NOT deleted/closed on approval — it stays
+  // up indefinitely and keeps accepting applicants until a leader manually
+  // deletes the message. (jobAdMessageId is still carried for context/DMs.)
 
   if (roleWarning) {
     await interaction.followUp({ content: roleWarning, ephemeral: true });
@@ -414,4 +512,9 @@ async function route(interaction) {
   return false;
 }
 
-module.exports = { route };
+module.exports = {
+  route,
+  // exported for tests / simulation
+  buildJobAdEmbed,
+  renderApplicantList,
+};

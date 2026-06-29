@@ -5,6 +5,7 @@ const quizDb = require('../quiz/db');
 const quiz = require('../quiz/handlers');
 const membersync = require('../membersync');
 const rosterDb = require('../roster/db');
+const officerDb = require('../officerapp/db');
 
 module.exports = {
   name: Events.ClientReady,
@@ -84,6 +85,24 @@ module.exports = {
       }
     } catch (err) {
       console.warn('[ready] Guild roster init failed (roster degraded, bot still online):', err?.message || err);
+    }
+
+    // Job Ads: connect to MongoDB for /jobad applicant-list persistence. Same
+    // Atlas cluster; own client. Degrades gracefully — no MONGODB_URI or Atlas
+    // unreachable means the job-ad flow still posts + processes applications
+    // (customId-based) and just skips the persistent applicant-list update.
+    // initSchema() never throws to the boot path.
+    try {
+      const ok = await officerDb.initSchema();
+      if (ok) {
+        console.log('[ready] Job-ad store ready (MongoDB).');
+      } else if (process.env.MONGODB_URI) {
+        console.warn('[ready] Job-ad persistence disabled — could not connect to MongoDB (check Atlas Network Access / URI).');
+      } else {
+        console.warn('[ready] Job-ad persistence disabled — MONGODB_URI not set.');
+      }
+    } catch (err) {
+      console.warn('[ready] Job-ad init failed (persistence degraded, bot still online):', err?.message || err);
     }
   },
 };
