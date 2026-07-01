@@ -1,5 +1,7 @@
 const { Events } = require('discord.js');
 const db = require('../kudos/db');
+const { logEvent } = require('../auditlog/logger');
+const { COLORS } = require('../auditlog/constants');
 
 const KUDOS_TRIGGER = /^\s*kudos\b/i;
 const REASON_MAX = 300;
@@ -80,6 +82,24 @@ module.exports = {
 
       for (const user of awarded) {
         await db.award(message.guild.id, message.author.id, user.id, reason);
+
+        // App-specific audit log: kudos given (who → whom + running total).
+        // Best-effort — a logging failure never blocks the award reply.
+        try {
+          const total = await db.totalForRecipient(message.guild.id, user.id);
+          await logEvent(message.client, {
+            color: COLORS.PURPLE,
+            title: '🙌 Kudos Given',
+            fields: [
+              { name: 'From', value: `${message.author} (${message.author.tag})`, inline: true },
+              { name: 'To', value: `${user} (${user.tag})`, inline: true },
+              { name: 'New Total', value: String(total), inline: true },
+              ...(reason ? [{ name: 'Reason', value: reason, inline: false }] : []),
+            ],
+          });
+        } catch (logErr) {
+          console.warn('[auditlog:kudos]', logErr?.message || logErr);
+        }
       }
 
       const remainingAfter = remaining - awarded.length;

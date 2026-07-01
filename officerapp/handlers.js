@@ -20,6 +20,9 @@ const {
 const { REVIEWER_ROLE_IDS } = require('../guildapp/constants');
 // Job-ad persistence (read+write). Degrades gracefully when not ready.
 const db = require('./db');
+// App-specific audit logging (job ad posted / applied / approved). Best-effort.
+const { logEvent } = require('../auditlog/logger');
+const { COLORS } = require('../auditlog/constants');
 
 // Polite copy — kept here so command + handlers agree.
 const COPY = {
@@ -179,6 +182,20 @@ async function handleJobAdModalSubmit(interaction) {
     });
   } catch (err) {
     console.warn('[jobad] Could not persist job ad (continuing — flow still works):', err?.message || err);
+  }
+
+  // App-specific audit log: job ad posted.
+  try {
+    await logEvent(interaction.client, {
+      color: COLORS.PURPLE,
+      title: '📌 Job Ad Posted',
+      fields: [
+        { name: 'Posted By', value: `${interaction.user} (${posterName})`, inline: false },
+        { name: 'Title', value: title || '—', inline: false },
+      ],
+    });
+  } catch (logErr) {
+    console.warn('[auditlog:jobad:posted]', logErr?.message || logErr);
   }
 
   await interaction.reply({
@@ -350,6 +367,21 @@ async function handleOfficerModalSubmit(interaction, jobAdMessageId) {
     }
   }
 
+  // App-specific audit log: job ad applied.
+  try {
+    await logEvent(interaction.client, {
+      color: COLORS.PURPLE,
+      title: '📝 Job Application Submitted',
+      fields: [
+        { name: 'Applicant', value: `${interaction.user} (${interaction.user.tag})`, inline: false },
+        { name: 'In-game Name', value: ign || '—', inline: true },
+        { name: 'Applying For', value: jobTitle, inline: true },
+      ],
+    });
+  } catch (logErr) {
+    console.warn('[auditlog:jobad:applied]', logErr?.message || logErr);
+  }
+
   await interaction.reply({ content: COPY.SUBMIT_CONFIRM, ephemeral: true });
 }
 
@@ -448,6 +480,21 @@ async function handleReviewButton(interaction, action, applicantUserId, jobAdMes
 
   if (roleWarning) {
     await interaction.followUp({ content: roleWarning, ephemeral: true });
+  }
+
+  // App-specific audit log: application reviewed (approved/rejected + approver).
+  try {
+    await logEvent(interaction.client, {
+      color: outcome.approval ? COLORS.PURPLE : COLORS.RED,
+      title: outcome.approval ? '✅ Officer Application Approved' : '❌ Officer Application Rejected',
+      fields: [
+        { name: 'Applicant', value: `<@${applicantUserId}>`, inline: false },
+        { name: 'Outcome', value: outcome.statusText, inline: true },
+        { name: 'Reviewed By', value: `${interaction.user} (${reviewerName})`, inline: true },
+      ],
+    });
+  } catch (logErr) {
+    console.warn('[auditlog:jobad:reviewed]', logErr?.message || logErr);
   }
 
   // Best-effort DM to the applicant — never crash if DMs are closed or member left.

@@ -2,20 +2,36 @@ require('dotenv').config();
 
 const fs   = require('node:fs');
 const path = require('node:path');
-const { Client, Collection, GatewayIntentBits } = require('discord.js');
+const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
 
 // ---------------------------------------------------------------------------
 // Client
-// Slash commands only need the Guilds intent; add more intents here as Conrad
-// specifies feature requirements (e.g. GuildMessages for message-content access).
+// Slash commands only need the Guilds intent; the rest are feature-driven.
+// The audit-log feature (auditlog/ + events/audit*.js) needs the moderation,
+// invite, expression, webhook, scheduled-event, and automod intents so the
+// corresponding gateway + audit-log-entry events fire. All are enabled in the
+// Dev Portal (Conrad confirmed). Partials let uncached message deletes and
+// user/member updates still emit so they can be logged.
 // ---------------------------------------------------------------------------
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,    // guildMemberAdd + member role reads
-    GatewayIntentBits.GuildMessages,   // receive messageCreate in guild channels
-    GatewayIntentBits.MessageContent,  // read message text for the "kudos @member" listener
-                                       // (PRIVILEGED — enable Message Content Intent in the Dev Portal)
+    GatewayIntentBits.GuildMembers,               // member add/remove/update + role reads
+    GatewayIntentBits.GuildModeration,            // bans + guildAuditLogEntryCreate (actor attribution)
+    GatewayIntentBits.GuildExpressions,           // emoji / sticker events
+    GatewayIntentBits.GuildInvites,               // invite create/delete + join invite-resolution
+    GatewayIntentBits.GuildWebhooks,              // webhook create/delete/update
+    GatewayIntentBits.GuildScheduledEvents,       // scheduled-event create/update/delete
+    GatewayIntentBits.GuildMessages,              // receive messageCreate + messageDelete in guild channels
+    GatewayIntentBits.MessageContent,             // read message text (kudos listener + delete-log content)
+                                                  // (PRIVILEGED — enable Message Content Intent in the Dev Portal)
+    GatewayIntentBits.AutoModerationExecution,    // automod rule-triggered logging
+  ],
+  partials: [
+    Partials.Message,       // log deletes of messages that weren't in cache
+    Partials.Channel,       // required alongside Partials.Message
+    Partials.GuildMember,   // uncached member on leave
+    Partials.User,          // uncached user on update
   ],
 });
 
