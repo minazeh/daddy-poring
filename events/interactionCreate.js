@@ -3,6 +3,7 @@ const guildapp = require('../guildapp/handlers');
 const officerapp = require('../officerapp/handlers');
 const partyfinder = require('../partyfinder/handlers');
 const quiz = require('../quiz/handlers');
+const activitycampaign = require('../activitycampaign/handlers');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -53,6 +54,12 @@ module.exports = {
         // namespace is unique, so this won't collide with the routers below.
         const quizHandled = await quiz.route(interaction);
         if (quizHandled) return;
+
+        // Activity campaign: sticky-prompt answer buttons
+        // (activitycampaign:yes / activitycampaign:no). Static customIds —
+        // restart-safe, unique namespace, no collision with other routers.
+        const campaignHandled = await activitycampaign.route(interaction);
+        if (campaignHandled) return;
 
         // Job-ad -> officer-application feature: jobad:modal, jobapply:<id>,
         // officerapp:modal:<id>, officerreview:daddy|mummy|reject:<userId>:<id>.

@@ -1,5 +1,6 @@
 const { Events } = require('discord.js');
 const db = require('../kudos/db');
+const activitySticky = require('../activitycampaign/sticky');
 const { logEvent } = require('../auditlog/logger');
 const { COLORS } = require('../auditlog/constants');
 
@@ -37,6 +38,17 @@ module.exports = {
     // Ignore bots, system messages, and DMs (no guild).
     if (message.author?.bot) return;
     if (!message.guild) return;
+
+    // Activity-campaign sticky trigger — ADDITIVE, runs before (and never
+    // blocks) the kudos flow below. Cheap in-memory checks unless this is the
+    // active campaign channel; repost work is debounced + fire-and-forget
+    // inside the module. A sticky failure must never take kudos down.
+    try {
+      activitySticky.onMessage(message);
+    } catch (err) {
+      console.warn('[activitycampaign] Sticky trigger failed (kudos unaffected):', err?.message || err);
+    }
+
     if (typeof message.content !== 'string') return;
 
     // Only react to "kudos ..." with at least one user mention.

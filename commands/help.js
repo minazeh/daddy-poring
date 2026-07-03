@@ -2,6 +2,7 @@ const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { REVIEWER_ROLE_IDS } = require('../guildapp/constants');
 const { OFFICER_ROLE_IDS } = require('../officerapp/constants');
 const { PARTYFINDER_ROLE_IDS } = require('../partyfinder/constants');
+const { GODFATHERS_ROLE_ID } = require('../activitycampaign/constants');
 
 // ---------------------------------------------------------------------------
 // Command metadata — single source of truth for the help list.
@@ -36,6 +37,13 @@ const COMMANDS = [
     description: 'Posts an officer recruitment ad with an Apply button; submitted applications go to leadership for review.',
     category: 'Leadership',
     access: REVIEWER_ROLE_IDS,
+  },
+  {
+    name: 'activitycampaign',
+    usage: '/activitycampaign start|stop|status',
+    description: 'Runs the launch-day pulse check — posts a sticky Yes/No prompt that stays at the bottom of the channel and tracks weekly answers.',
+    category: 'Leadership',
+    access: [GODFATHERS_ROLE_ID],
   },
   {
     name: 'memberclasses',

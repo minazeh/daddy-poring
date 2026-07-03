@@ -7,6 +7,8 @@ const membersync = require('../membersync');
 const rosterDb = require('../roster/db');
 const officerDb = require('../officerapp/db');
 const rodbDb = require('../rodb/db');
+const activityDb = require('../activitycampaign/db');
+const activitySticky = require('../activitycampaign/sticky');
 
 module.exports = {
   name: Events.ClientReady,
@@ -123,6 +125,28 @@ module.exports = {
       }
     } catch (err) {
       console.warn('[ready] Game database init failed (rodb degraded, bot still online):', err?.message || err);
+    }
+
+    // Activity Campaign: connect to MongoDB for the /activitycampaign launch
+    // pulse-check (sticky Yes/No prompt + weekly answers). Same Atlas cluster;
+    // own client. After a successful connect, resume() checks whether a
+    // campaign was active before the restart and immediately reposts the
+    // sticky prompt so it's visible again. Degrades gracefully — no
+    // MONGODB_URI or Atlas unreachable means /activitycampaign replies
+    // "unavailable", button clicks get an ephemeral retry message, and the
+    // sticky repost is skipped. initSchema()/resume() never throw to boot.
+    try {
+      const ok = await activityDb.initSchema();
+      if (ok) {
+        console.log('[ready] Activity-campaign store ready (MongoDB).');
+        await activitySticky.resume(client);
+      } else if (process.env.MONGODB_URI) {
+        console.warn('[ready] Activity campaign disabled — could not connect to MongoDB (check Atlas Network Access / URI).');
+      } else {
+        console.warn('[ready] Activity campaign disabled — MONGODB_URI not set.');
+      }
+    } catch (err) {
+      console.warn('[ready] Activity-campaign init failed (campaign degraded, bot still online):', err?.message || err);
     }
   },
 };
