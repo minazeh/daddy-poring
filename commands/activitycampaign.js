@@ -5,9 +5,13 @@
 //                                        posts the sticky Yes/No prompt.
 //                                        channel defaults to where it's run.
 //   /activitycampaign stop             — deactivate + delete the sticky.
-//   /activitycampaign status           — ephemeral results: this week's
-//                                        Yes/No tallies + name lists, and
-//                                        all-time totals.
+//   /activitycampaign status           — PUBLIC results: this week's Yes/No
+//                                        tallies + a capped name preview, plus
+//                                        all-time totals. Full Yes/No lists are
+//                                        attached as a text file when either
+//                                        list exceeds the inline cap (so it
+//                                        scales to hundreds/thousands without
+//                                        hitting Discord's 2000-char limit).
 //
 // The prompt's BUTTONS are open to everyone; only this command is role-gated.
 // All persistence lives in activitycampaign/db.js (graceful degrade — DB down
@@ -22,6 +26,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
   ActionRowBuilder,
+  AttachmentBuilder,
 } = require('discord.js');
 const db = require('../activitycampaign/db');
 const sticky = require('../activitycampaign/sticky');
@@ -32,6 +37,7 @@ const {
   FIELDS,
   PROMPT_TEXT,
   MESSAGE_MAX_LENGTH,
+  WEEK_TZ_LABEL,
 } = require('../activitycampaign/constants');
 
 // Returns true only if the member holds the Godfathers role.
@@ -41,13 +47,39 @@ function isGodfather(interaction) {
   return Boolean(member.roles?.cache?.has?.(GODFATHERS_ROLE_ID));
 }
 
-// Render a display-name list capped at STATUS_LIST_CAP with a "+N more" trailer.
-function renderNameList(docs) {
+// A doc's best display name.
+function nameOf(d) {
+  return d.displayName || d.username || d.userId;
+}
+
+// Render a display-name preview: capped at STATUS_LIST_CAP names AND a hard
+// character budget (long names can't blow the message cap), with a "+N more"
+// trailer counting everyone omitted by either limit.
+function renderNamePreview(docs) {
   if (!docs.length) return '—';
-  const names = docs.map(d => d.displayName || d.username || d.userId);
-  const shown = names.slice(0, STATUS_LIST_CAP);
+  const names = docs.map(nameOf);
+  const CHAR_BUDGET = 500; // well within the 2000 content cap after other lines
+  const shown = [];
+  let len = 0;
+  for (let i = 0; i < names.length && i < STATUS_LIST_CAP; i++) {
+    const piece = names[i];
+    if (len + piece.length + 2 > CHAR_BUDGET) break;
+    shown.push(piece);
+    len += piece.length + 2;
+  }
   const extra = names.length - shown.length;
-  return shown.join(', ') + (extra > 0 ? ` … +${extra} more` : '');
+  return (shown.join(', ') || '…') + (extra > 0 ? ` … +${extra} more` : '');
+}
+
+// Build the full-list attachment (both Yes and No sections, every name) so no
+// responder is lost when the inline preview is capped.
+function buildFullListFile(weekLabel, yes, no) {
+  const section = (title, docs) =>
+    `${title} (${docs.length}):\n` + (docs.length ? docs.map(nameOf).join('\n') : '(none)');
+  const body =
+    `Activity Campaign — status\nWeek: ${weekLabel}\n\n` +
+    section('YES', yes) + '\n\n' + section('NO', no) + '\n';
+  return new AttachmentBuilder(Buffer.from(body, 'utf8'), { name: 'activity-campaign-status.txt' });
 }
 
 module.exports = {
@@ -163,16 +195,24 @@ module.exports = {
     // status
     // -----------------------------------------------------------------------
     if (sub === 'status') {
-      await interaction.deferReply({ ephemeral: true });
+      // Results post PUBLICLY (not ephemeral). The deny + DB-unavailable
+      // messages above stay ephemeral — only the actual results go public.
+      await interaction.deferReply();
 
+      const weekKey = sticky.weekKeyForDate();
       const [cfg, weekDocs, allTime] = await Promise.all([
         db.getConfig(),
-        db.getWeekResponses(sticky.weekKeyForDate()),
+        db.getWeekResponses(weekKey),
         db.getAllTimeTotals(),
       ]);
 
       const yes = weekDocs.filter(d => d.answer === 'yes');
       const no = weekDocs.filter(d => d.answer === 'no');
+      const weekLabel = `${weekKey}, ${WEEK_TZ_LABEL}`;
+
+      // Attach the full lists whenever either side exceeds the inline cap, so
+      // nothing is lost and `content` never risks the 2000-char limit.
+      const needFile = yes.length > STATUS_LIST_CAP || no.length > STATUS_LIST_CAP;
 
       const lines = [
         '📊 **Activity Campaign — status**',
@@ -180,17 +220,26 @@ module.exports = {
           ? `Campaign: 🟢 active in <#${cfg.channelId}>`
           : 'Campaign: ⚫ inactive',
         '',
-        `**This week (${sticky.weekKeyForDate()}, UTC):**`,
+        `**This week (${weekLabel}):**`,
         `✅ Yes: **${yes.length}** · ❌ No: **${no.length}** · Unique responders: **${weekDocs.length}**`,
-        `✅ ${renderNameList(yes)}`,
-        `❌ ${renderNameList(no)}`,
+        `✅ ${renderNamePreview(yes)}`,
+        `❌ ${renderNamePreview(no)}`,
+        ...(needFile ? ['📎 Full Yes/No lists attached below.'] : []),
         '',
         allTime
           ? `**All-time:** ✅ ${allTime.yes} yes · ❌ ${allTime.no} no · ${allTime.uniqueResponders} unique responders (weekly answers, all weeks)`
           : '**All-time:** unavailable',
       ];
 
-      await interaction.editReply(lines.join('\n'));
+      // Final hard guard — never send >2000 chars of content (previews are
+      // already bounded, but truncate defensively just in case).
+      let content = lines.join('\n');
+      if (content.length > 2000) content = content.slice(0, 1997) + '…';
+
+      const payload = { content };
+      if (needFile) payload.files = [buildFullListFile(weekLabel, yes, no)];
+
+      await interaction.editReply(payload);
       return;
     }
   },

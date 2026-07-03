@@ -27,17 +27,25 @@ const {
   BUTTON_YES_LABEL,
   BUTTON_NO_LABEL,
   REPOST_COOLDOWN_MS,
+  WEEK_TZ_OFFSET_HOURS,
 } = require('./constants');
 
 // ---------------------------------------------------------------------------
-// ISO-week key, computed in UTC (fixed TZ so a member's "week" never shifts
-// with server locale). Format: `2026-W29`. ISO-8601: weeks start Monday; week
-// 1 is the week containing the year's first Thursday — so Jan 1–3 can belong
-// to the previous ISO year's W52/W53 and Dec 29–31 to the next year's W01.
+// ISO-week key. The week rolls at MONDAY 00:00 in the campaign timezone
+// (WEEK_TZ_OFFSET_HOURS — GMT+8 for the SEA server), NOT UTC: we shift the
+// instant by the offset, then ISO-week it with UTC math so the Monday-start
+// boundary lands at Monday 00:00 GMT+8 (= Sunday 16:00 UTC).
+//
+// Format: `2026-W29`. ISO-8601: weeks start Monday; week 1 is the week
+// containing the year's first Thursday — so Jan 1–3 can belong to the previous
+// ISO year's W52/W53 and Dec 29–31 to the next year's W01. The offset is fixed
+// (no DST — GMT+8 has none) so the boundary never drifts.
 // ---------------------------------------------------------------------------
 function weekKeyForDate(d = new Date()) {
-  // Work on a UTC-midnight copy so time-of-day never matters.
-  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  // Shift into the campaign timezone, then read UTC fields = local wall clock.
+  const shifted = new Date(d.getTime() + WEEK_TZ_OFFSET_HOURS * 3_600_000);
+  // Work on a UTC-midnight copy of the local date so time-of-day never matters.
+  const date = new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()));
   const day = date.getUTCDay() || 7;              // Mon=1 … Sun=7
   date.setUTCDate(date.getUTCDate() + 4 - day);   // shift to this week's Thursday
   const isoYear = date.getUTCFullYear();          // Thursday's year = ISO year

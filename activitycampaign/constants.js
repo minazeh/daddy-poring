@@ -39,14 +39,14 @@ const MESSAGE_MAX_LENGTH = 2000;
 // PROMPT_TEXT is the sticky message body (plain content, NOT an embed).
 // ---------------------------------------------------------------------------
 const PROMPT_TEXT =
-  "🎉 **Launch day is July 16 — are you joining us?** Tap below. You can change your answer anytime this week.";
+  "🎉 **Launch day is July 16 — are you joining us?** Tap below.";
 
 const BUTTON_YES_LABEL = "✅ Yes, I'm in";
 const BUTTON_NO_LABEL  = "❌ No, I don't think so";
 
 // Ephemeral acks sent to the clicker (the public prompt is never edited).
-const ACK_YES = "✅ You're in! You can change your answer this week.";
-const ACK_NO  = "👍 Noted — thanks! You can change this week.";
+const ACK_YES = "✅ You're in!";
+const ACK_NO  = "👍 Noted — thanks!";
 const ACK_DB_DOWN = "⚠️ Couldn't record your answer right now — please try again in a moment.";
 
 // ---------------------------------------------------------------------------
@@ -56,9 +56,18 @@ const ACK_DB_DOWN = "⚠️ Couldn't record your answer right now — please try
 // single trailing repost when the window closes.
 const REPOST_COOLDOWN_MS = 30_000;
 
-// /activitycampaign status: max display names listed per answer column before
-// collapsing into "+N more".
-const STATUS_LIST_CAP = 25;
+// /activitycampaign status: max display names shown INLINE per answer column
+// before collapsing into "+N more". When a list exceeds this, the FULL Yes/No
+// lists are attached as a text file so nothing is lost and the message stays
+// under Discord's 2000-char cap.
+const STATUS_LIST_CAP = 20;
+
+// -------------------------------------------------------------------------
+// Weekly reset timezone. The ISO week rolls at MONDAY 00:00 in this timezone.
+// SEA server → GMT+8. Edit this one line to change the reset timezone.
+// -------------------------------------------------------------------------
+const WEEK_TZ_OFFSET_HOURS = 8;   // GMT+8 (SEA). Monday 00:00 GMT+8 = Sunday 16:00 UTC.
+const WEEK_TZ_LABEL = 'GMT+8';    // shown on the /status week label
 
 module.exports = {
   GODFATHERS_ROLE_ID,
@@ -73,4 +82,6 @@ module.exports = {
   ACK_DB_DOWN,
   REPOST_COOLDOWN_MS,
   STATUS_LIST_CAP,
+  WEEK_TZ_OFFSET_HOURS,
+  WEEK_TZ_LABEL,
 };
