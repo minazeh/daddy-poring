@@ -3,6 +3,7 @@ const { REVIEWER_ROLE_IDS } = require('../guildapp/constants');
 const { OFFICER_ROLE_IDS } = require('../officerapp/constants');
 const { PARTYFINDER_ROLE_IDS } = require('../partyfinder/constants');
 const { GODFATHERS_ROLE_ID } = require('../activitycampaign/constants');
+const { GODFATHERS_ROLE_ID: GVG_GODFATHERS_ROLE_ID } = require('../gvg/constants');
 
 // ---------------------------------------------------------------------------
 // Command metadata — single source of truth for the help list.
@@ -44,6 +45,20 @@ const COMMANDS = [
     description: 'Runs the launch-day pulse check — posts a sticky Yes/No prompt that stays at the bottom of the channel and tracks weekly answers.',
     category: 'Leadership',
     access: [GODFATHERS_ROLE_ID],
+  },
+  {
+    name: 'gvgschedule',
+    usage: '/gvgschedule add|list|remove',
+    description: 'Manages weekly GvG attendance schedules (day + time GMT+7) — when one fires, the bot records who is in the monitored voice channels and posts an attendance log.',
+    category: 'Leadership',
+    access: [GVG_GODFATHERS_ROLE_ID],
+  },
+  {
+    name: 'gvgvc',
+    usage: '/gvgvc add|list|remove',
+    description: 'Manages the voice channels monitored for GvG attendance — tag each VC Daddy or Mummy so attendees are checked against the right roster.',
+    category: 'Leadership',
+    access: [GVG_GODFATHERS_ROLE_ID],
   },
   {
     name: 'memberclasses',

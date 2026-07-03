@@ -26,6 +26,8 @@ const client = new Client({
     GatewayIntentBits.MessageContent,             // read message text (kudos listener + delete-log content)
                                                   // (PRIVILEGED — enable Message Content Intent in the Dev Portal)
     GatewayIntentBits.AutoModerationExecution,    // automod rule-triggered logging
+    GatewayIntentBits.GuildVoiceStates,           // GvG attendance — read VC membership +
+                                                  // voiceStateUpdate joins (non-privileged)
   ],
   partials: [
     Partials.Message,       // log deletes of messages that weren't in cache
