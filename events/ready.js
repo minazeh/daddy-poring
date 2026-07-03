@@ -6,6 +6,7 @@ const quiz = require('../quiz/handlers');
 const membersync = require('../membersync');
 const rosterDb = require('../roster/db');
 const officerDb = require('../officerapp/db');
+const rodbDb = require('../rodb/db');
 
 module.exports = {
   name: Events.ClientReady,
@@ -103,6 +104,25 @@ module.exports = {
       }
     } catch (err) {
       console.warn('[ready] Job-ad init failed (persistence degraded, bot still online):', err?.message || err);
+    }
+
+    // Game Database (RoworldDB snapshot): connect (read-only) to MongoDB for
+    // the /monster /item /card /map lookups. Same Atlas cluster; own client.
+    // Degrades gracefully — no MONGODB_URI, Atlas unreachable, or import not
+    // yet run leaves those commands replying "not available" and the bot
+    // fully online. initSchema() never throws. Data is loaded one-time by
+    // scripts/import-roworlddb.js (never by the bot — bot path never writes).
+    try {
+      const ok = await rodbDb.initSchema();
+      if (ok) {
+        console.log('[ready] Game database ready (MongoDB, read-only).');
+      } else if (process.env.MONGODB_URI) {
+        console.warn('[ready] Game database disabled — could not connect to MongoDB (check Atlas Network Access / URI).');
+      } else {
+        console.warn('[ready] Game database disabled — MONGODB_URI not set.');
+      }
+    } catch (err) {
+      console.warn('[ready] Game database init failed (rodb degraded, bot still online):', err?.message || err);
     }
   },
 };

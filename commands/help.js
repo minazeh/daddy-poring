@@ -79,6 +79,34 @@ const COMMANDS = [
     category: 'Quiz',
     access: 'everyone',
   },
+  {
+    name: 'monster',
+    usage: '/monster <name>',
+    description: 'Looks up a monster — stats, element, race, and drop rates. Data from roworlddb.com.',
+    category: 'Game Database',
+    access: 'everyone',
+  },
+  {
+    name: 'item',
+    usage: '/item <name>',
+    description: 'Looks up equipment — stats, effects, refine bonuses, and job limits. Data from roworlddb.com.',
+    category: 'Game Database',
+    access: 'everyone',
+  },
+  {
+    name: 'card',
+    usage: '/card <name>',
+    description: 'Looks up a card — effect, equip slot, and which monsters drop it. Data from roworlddb.com.',
+    category: 'Game Database',
+    access: 'everyone',
+  },
+  {
+    name: 'map',
+    usage: '/map <name>',
+    description: 'Looks up a map — region, minimap, and known monster spawns. Data from roworlddb.com.',
+    category: 'Game Database',
+    access: 'everyone',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -91,6 +119,7 @@ const CATEGORY_META = {
   'Party Finder': { label: '🎮 Party Finder',  color: 0x5865F2 },
   Community:      { label: '🙌 Community',      color: 0x5865F2 },
   Quiz:           { label: '🎯 Quiz',          color: 0x5865F2 },
+  'Game Database': { label: '📖 Game Database', color: 0x5865F2 },
 };
 
 module.exports = {

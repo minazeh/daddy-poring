@@ -10,6 +10,33 @@ module.exports = {
   async execute(interaction) {
     try {
       // ----------------------------------------------------------------------
+      // Autocomplete (rodb /monster /item /card /map name options — any
+      // command may opt in by exporting an `autocomplete(interaction)`).
+      // Handled FIRST: Discord gives autocomplete a hard 3 s window, and this
+      // interaction type is neither a component nor a chat command, so the
+      // routers below must never see it. Self-contained error handling —
+      // autocomplete can only be answered with respond(), never reply(), so
+      // the generic catch at the bottom doesn't apply. Unknown command or no
+      // handler → respond with an empty list, never throw.
+      // ----------------------------------------------------------------------
+      if (interaction.isAutocomplete()) {
+        const command = interaction.client.commands.get(interaction.commandName);
+        try {
+          if (command?.autocomplete) {
+            await command.autocomplete(interaction);
+          } else {
+            await interaction.respond([]);
+          }
+        } catch (err) {
+          console.warn('[interactionCreate] Autocomplete error:', err?.message || err);
+          if (!interaction.responded) {
+            try { await interaction.respond([]); } catch { /* window expired — ignore */ }
+          }
+        }
+        return;
+      }
+
+      // ----------------------------------------------------------------------
       // Guild application feature: buttons (guildapp:start, appreview:*) and
       // modal submit (guildapp:modal). route() returns true if
       // it owned the interaction.
