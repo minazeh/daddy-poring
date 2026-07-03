@@ -69,6 +69,16 @@ function buildEmbed(m) {
     embed.addFields({ name: 'Appears in', value: joinLines(m.activities, 6), inline: false });
   }
 
+  // Tier B: maps with recorded spawns for this monster. Snapshot spawn
+  // coverage is PARTIAL (36/354 maps, event-skewed) — labeled honestly.
+  if (Array.isArray(m.foundIn) && m.foundIn.length) {
+    const lines = m.foundIn.map((f) => {
+      const name = f.region && f.region !== f.mapName ? `${f.mapName} (${f.region})` : f.mapName;
+      return f.spawnSpots ? `${name} — ${f.spawnSpots} spawn spot${f.spawnSpots === 1 ? '' : 's'}` : name;
+    });
+    embed.addFields({ name: 'Found in (partial spawn data)', value: joinLines(lines, 8), inline: false });
+  }
+
   return embed;
 }
 

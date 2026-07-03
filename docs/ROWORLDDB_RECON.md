@@ -222,3 +222,65 @@ Command files then export an `autocomplete(interaction)` alongside `execute`. Th
 3. **Locale**: en-US assumed. Other locales (zh-TW, th-TH, id-ID…) exist as parallel files if guild members want another language later.
 4. **Map spawn sparseness** (§4.4): accept `/map` with sparse spawn data, or drop the spawns field entirely and keep `/map` as region/minimap info only.
 5. **Attribution**: confirm `Data: roworlddb.com` footer is wanted on every embed.
+
+---
+
+## 13. Tier A/B — remaining sections (2026-07-03 confidence-gate recon)
+
+Same static-JSON pattern confirmed for every remaining section (`/sea/<section>/data/*_<locale>.json`, plain unauthenticated GETs, asset-version `20260702-135340` unchanged). 63 polite requests (incl. 48 per-job skill files), ~10.7 MB. Verdict per section:
+
+### 13.1 Skills — **BUILD** (`/skill`, `rodb_skills`)
+
+- **Files**: `skill-simulator/data/skills_index_en-US.json` (48 jobs: id, name, icon, parent/children tree, skill_point_limit) + per-job `skill-simulator/data/jobs_en-US/<job_id>.json` (~48 files, 5.5 MB total).
+- **Per job**: `skills{}` + `unique_skills{}` + `traits{}`, each keyed by a **globally unique skill key**; entry = `{name, skilldes, icon, natural_max_level, max_level, levels{n: {skill_id, des, mana_cost, cooldown(ms), range_max, gcd, skill_tags[{name,icon}], elements_type, …}}}`.
+- **Dedup fact**: 317 raw entries → 41 keys appear in 2–4 job files (inherited down the class line, e.g. Knight → Lord Knight → Rune Knight); **content verified byte-identical across files** → dedupe by key, carry `jobs: [names]`. ≈276 unique skill docs, 232 unique names (39 duplicated → autocomplete disambiguates by job).
+- **Quirk**: job 822's `job_name` is `"Not yet available"` (unreleased class) but its 12 skills are real — imported as-is.
+- **Descriptions** carry Unity `<color=#…>` markup — stripped at import.
+
+### 13.2 Runes — **BUILD** (`/rune`, `rodb_runes`)
+
+- **File**: `skill-simulator/data/engine_runes_en-US.json` (98 KB).
+- **Lookup entity**: `effectGroups` (33 named rune effects, e.g. "Deadly Finale") with `levels{1..5: {desc, color, elementId}}` + icon; `elements` (5 crystals) give resonance thresholds (2/4/7-piece set texts). `baseItems`/`effectPackages`/`affixRanges` are simulator roll-weights — not needed for a lookup.
+- Small but clean: 33 docs, no name collisions, per-level descriptions render perfectly in one embed.
+
+### 13.3 Refine — **BUILD** (`/refine`, `rodb_refine`)
+
+- **File**: `refine-simulator/data/refine_en-US.json` (24 KB). The URL's `refine_${n}` variable is the **locale**, not a category — one file total.
+- **Content**: `levels[20]` (`level → targetLevel`, `success/downgrade/fail` percents, material item + amount + zeny cost, replacement-currency option), `groups[3]` (+0–9 Oridecon / +10–14 Enriched / +15–19 tier), `safeLevels [6,9,12,15]`, `pityBonuses{1..10}`.
+- **Not name-shaped** → `/refine [level]` takes an optional integer (current +level) instead of autocomplete; no level → compact full table.
+
+### 13.4 Pets — **BUILD** (`/pet`, `rodb_pets`)
+
+- **File**: `pet/data/pet_library_en-US.json` (393 KB). 28 pets: `{id, name, quality{tag N/R/SR/SSR}, iconUrl, levels[{level, expRequired, skill{name, description, attrs[stat buffs to player]}}], combatSkills[typed unlock lists w/ cooldown+element], battleStats{lv100 atk/def/matk/mdef/maxHp}}`. Clean, complete, zero name collisions.
+
+### 13.5 Shop — **BUILD** (`/shop`, `rodb_shop`)
+
+- **File**: `shop/data/shop_en-US.json` (810 KB). 599 listings across 25 NPC stores (`storeName`/`tabName`), `purchaseOptions[{currencyName, amount, mode}]` (597/599 priced; 2 zero-price), limits (`limitNum` + refresh), `desc`/`story`, quality, iconPath, `itemId`.
+- 75/392 duplicate names (same item in multiple stores) → autocomplete label disambiguates by store.
+
+### 13.6 Affixes — **SKIP standalone `/affix`; wired into `/item` instead (Tier B)**
+
+- **Files**: `affix-simulator/data/stunt_skill_library_en-US.json` (3.3 MB; 307 packages → 2,654 unique stunt ids, 177 unique names × levels 1–3) + `stunt_package_index_en-US.json` (weapon/armor package ids by type + level bracket).
+- **Why no standalone command**: affix **values scale with gear tier** — all 531/531 (name, level) pairs have conflicting descriptions across packages (e.g. "Fire Resistance Lv1" = −0.5% on a Lv15 weapon but −15% on Lv90). A name-only lookup cannot state a value without inventing tier context → would ship a wrong-or-vague embed. **Verified exact join for the per-item view instead**: equipment `itemSubtype` (weapons 7001–7021) and `assemblyType` (4 Armor / 7 Cape) live in the SAME id space as the package index keys, and item `openLevel`s match the bracket keys **exactly** (weapons 15/25/40/55/70/80/90; armor/cape 26/41/56/70/71/81/91). `/item` gets a tier-correct "Rollable affixes" field precomputed at import.
+
+### 13.7 Study — **SKIP**
+
+Quiz-minigame question banks (`study/data/lucky_rabbit_questions_*.json`, `guild_banquet_questions_*.json`); **en-US returns 404** (zh-TW only). Not a lookup, no usable locale.
+
+### 13.8 Apocalypse — **SKIP**
+
+`apocalypse-simulator/data/apocalypse_planner_en-US.json`: 984 planner matrix rows (`{quality, category, keyword, detail_text "ATK +49~73", part_keys}`). Roll-range data for the apocalypse gear system — rows have no lookup identity (titles are attribute names repeated across parts/qualities); only meaningful inside the planner UI.
+
+### 13.9 Events — **SKIP**
+
+`events/data/events_en-US.json`: 30 weekly + 1 calendar entry with absolute date ranges and server-timezone math. Time-anchored schedule content — **stale by design** in a one-time snapshot; a wrong "event is live now" answer is worse than none.
+
+### 13.10 Tier B cross-links — verified joins
+
+| Cross-link | Join | Verdict |
+|---|---|---|
+| `/item` → Sold at | `shop.itemId == equipment._id` (32 of 394 shop itemIds are equipment) | **BUILD** (runtime query, itemId index) |
+| `/item` → Rollable affixes | subtype/assembly + exact openLevel → packages → stunt names (§13.6) | **BUILD** (precomputed at import) |
+| `/item` → Refine odds | none — refine table is global per refine-level, no per-item key | **SKIP** → `/refine` covers it |
+| `/monster` → Found in | `map.spawns[].monster_id == monster._id` (100/102 join, 36/354 maps) | **BUILD** (precomputed, labeled partial) |
+| `/skill` → class filter | skills carry job ids/names natively | **BUILD** (optional `class` option w/ own autocomplete) |

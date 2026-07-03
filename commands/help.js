@@ -107,6 +107,41 @@ const COMMANDS = [
     category: 'Game Database',
     access: 'everyone',
   },
+  {
+    name: 'skill',
+    usage: '/skill <name> [class]',
+    description: 'Looks up a skill — effect, SP cost, cooldown, and levels; filter suggestions by class. Data from roworlddb.com.',
+    category: 'Game Database',
+    access: 'everyone',
+  },
+  {
+    name: 'rune',
+    usage: '/rune <name>',
+    description: 'Looks up a rune effect — per-level bonuses and element resonance. Data from roworlddb.com.',
+    category: 'Game Database',
+    access: 'everyone',
+  },
+  {
+    name: 'refine',
+    usage: '/refine [level]',
+    description: 'Shows refine odds and materials — one level or the full +0→+20 table. Data from roworlddb.com.',
+    category: 'Game Database',
+    access: 'everyone',
+  },
+  {
+    name: 'pet',
+    usage: '/pet <name>',
+    description: 'Looks up a pet — rarity, combat skills, owner buffs, and battle stats. Data from roworlddb.com.',
+    category: 'Game Database',
+    access: 'everyone',
+  },
+  {
+    name: 'shop',
+    usage: '/shop <name>',
+    description: 'Looks up an NPC shop listing — which store sells it, price, and limits. Data from roworlddb.com.',
+    category: 'Game Database',
+    access: 'everyone',
+  },
 ];
 
 // ---------------------------------------------------------------------------

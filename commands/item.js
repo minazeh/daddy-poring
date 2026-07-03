@@ -13,7 +13,18 @@ const label = (it) => {
   return `${it.name} (${bits.join(' · ')})`;
 };
 
-function buildEmbed(it) {
+// "MVP Shop (Medicine) — 400× Adventure Coin"
+function soldAtLine(listing) {
+  const where = [listing.store, listing.tab && listing.tab !== listing.store ? `(${listing.tab})` : null]
+    .filter(Boolean)
+    .join(' ');
+  const price = (listing.prices || [])
+    .map((p) => `${(p.amount ?? 0).toLocaleString('en-US')}× ${p.currency ?? '?'}`)
+    .join(' / ');
+  return price ? `${where} — ${price}` : where;
+}
+
+function buildEmbed(it, soldAt = []) {
   const headBits = [`Q${it.quality ?? '?'} ${it.typeName ?? 'Item'}`];
   if (it.subtypeName && it.subtypeName !== it.typeName) headBits.push(it.subtypeName);
   if (it.level) headBits.push(`Lv ${it.level}`);
@@ -58,6 +69,18 @@ function buildEmbed(it) {
     });
   }
 
+  // Tier B: affixes that can roll on this exact item tier (precomputed at
+  // import via the exact subtype/assembly + openLevel package join).
+  if (Array.isArray(it.rollableAffixes) && it.rollableAffixes.length) {
+    const lines = it.rollableAffixes.map((a) => `${a.name}${a.maxLevel > 1 ? ` (Lv 1–${a.maxLevel})` : ''}`);
+    embed.addFields({ name: 'Rollable affixes', value: joinLines(lines, 12), inline: false });
+  }
+
+  // Tier B: NPC shop listings selling this item (32 equipment items match).
+  if (soldAt.length) {
+    embed.addFields({ name: 'Sold at', value: joinLines(soldAt.map(soldAtLine), 6), inline: false });
+  }
+
   return embed;
 }
 
@@ -95,7 +118,13 @@ module.exports = {
         return;
       }
 
-      await interaction.editReply({ embeds: [buildEmbed(item)] });
+      // Tier B "Sold at" — never blocks the embed if the shop lookup fails.
+      let soldAt = [];
+      try {
+        soldAt = await db.getShopListingsByItemId(item._id);
+      } catch { /* degrade to no field */ }
+
+      await interaction.editReply({ embeds: [buildEmbed(item, soldAt)] });
     } catch (err) {
       console.warn('[item] Lookup failed:', err?.message || err);
       await interaction.editReply("Couldn't load that item right now — please try again in a moment.");

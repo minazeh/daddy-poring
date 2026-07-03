@@ -13,7 +13,17 @@
 //
 //   rodb_monsters   (~2,673)   rodb_equipment (~2,664)
 //   rodb_cards      (~226)     rodb_maps      (~354)
-//   rodb_meta       (1 doc — snapshot version + import timestamp + counts)
+//   rodb_skills     (~276)     rodb_runes     (~33)
+//   rodb_refine     (20)       rodb_pets      (28)
+//   rodb_shop       (~599)
+//   rodb_meta       (snapshot + per-section provenance + refine config)
+//
+// Tier A/B extension (docs/ROWORLDDB_RECON.md §13): skills (48 per-job files,
+// deduped by globally-unique skill key), runes (effect groups + element
+// resonance), refine (per-level odds + materials), pets, shop. Cross-links
+// precomputed at import: equipment.rollableAffixes (exact subtype/assembly +
+// openLevel bracket join into the affix stunt packages) and monster.foundIn
+// (reverse of the sparse map spawn views).
 //
 // SAFETY:
 //   * Writes ONLY to collections prefixed `rodb_` — a hard assert guards every
@@ -65,11 +75,20 @@ const FILES = [
   { name: 'map_monster_spawns_en-US.json', url: `${BASE}/sea/map-simulator/data/map_monster_spawns_en-US.json` },
   { name: 'map_subregions_en-US.json',     url: `${BASE}/sea/map-simulator/data/map_subregions_en-US.json` },
   { name: 'icon_paths.json',               url: `${BASE}/sea/skill-simulator/data/icon_paths.json` },
+  // Tier A extension datasets (all confirmed static/clean — recon §13).
+  { name: 'skills_index_en-US.json',       url: `${BASE}/sea/skill-simulator/data/skills_index_en-US.json` },
+  { name: 'engine_runes_en-US.json',       url: `${BASE}/sea/skill-simulator/data/engine_runes_en-US.json` },
+  { name: 'stunt_skill_library_en-US.json', url: `${BASE}/sea/affix-simulator/data/stunt_skill_library_en-US.json` },
+  { name: 'stunt_package_index_en-US.json', url: `${BASE}/sea/affix-simulator/data/stunt_package_index_en-US.json` },
+  { name: 'refine_en-US.json',             url: `${BASE}/sea/refine-simulator/data/refine_en-US.json` },
+  { name: 'pet_library_en-US.json',        url: `${BASE}/sea/pet/data/pet_library_en-US.json` },
+  { name: 'shop_en-US.json',               url: `${BASE}/sea/shop/data/shop_en-US.json` },
 ];
 
 // The ONLY collections this script may touch. coll() asserts against this list.
 const ALLOWED_COLLECTIONS = new Set([
   'rodb_monsters', 'rodb_equipment', 'rodb_cards', 'rodb_maps', 'rodb_meta',
+  'rodb_skills', 'rodb_runes', 'rodb_refine', 'rodb_pets', 'rodb_shop',
 ]);
 
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
@@ -147,6 +166,31 @@ async function ensureSnapshot() {
   return { data, info };
 }
 
+// Per-job skill files (jobs_en-US/<job_id>.json — one per job in the skills
+// index). Same reuse-on-disk / polite-fetch rules as ensureSnapshot.
+async function ensureJobFiles(skillsIndex) {
+  const dir = path.join(SNAPSHOT_DIR, 'jobs_en-US');
+  fs.mkdirSync(dir, { recursive: true });
+  const jobFiles = [];
+  let fetchedAny = false;
+  for (const jobId of Object.keys(skillsIndex.jobs || {})) {
+    const file = path.join(dir, `${jobId}.json`);
+    let json = fs.existsSync(file) ? readJsonIfValid(file) : null;
+    if (!json) {
+      if (fetchedAny) await sleep(FETCH_DELAY_MS);
+      const url = `${BASE}/sea/skill-simulator/data/jobs_en-US/${jobId}.json`;
+      console.log(`[snapshot] fetching ${url}`);
+      const text = await fetchWithRetry(url);
+      json = JSON.parse(text);
+      fs.writeFileSync(file, text);
+      fetchedAny = true;
+    }
+    jobFiles.push(json);
+  }
+  console.log(`[snapshot] job skill files ready: ${jobFiles.length}`);
+  return jobFiles;
+}
+
 // ---------------------------------------------------------------------------
 // Image URL resolution via icon_paths.json, with prefix-heuristic fallback.
 // ---------------------------------------------------------------------------
@@ -220,7 +264,7 @@ function buildDrops(displayDrops, rateEntries) {
   return out;
 }
 
-function transformMonsters(album, icon) {
+function transformMonsters(album, icon, foundInByMonster = new Map()) {
   return (album.monsters || []).map((m) => ({
     _id: m.id,
     name: m.name ?? null,
@@ -243,6 +287,8 @@ function transformMonsters(album, icon) {
         }
       : null,
     activities: Array.isArray(m.activities) ? m.activities : [],
+    // Tier B: maps this monster spawns on (sparse — 36/354 maps have views).
+    foundIn: foundInByMonster.get(m.id) || [],
   }));
 }
 
@@ -251,7 +297,7 @@ const isPlaceholderText = (t) =>
   !t || t.length < 3 || /^stunt \d+$/i.test(t) || /^\d+$/.test(t);
 const isPlaceholderJob = (n) => !n || /^job \d+$/i.test(n);
 
-function transformEquipment(eq, icon) {
+function transformEquipment(eq, icon, affixesFor = () => []) {
   const attrs = eq.attributes || {};
   const jobs = eq.jobs || {};
   const conditions = eq.conditions || {};
@@ -318,6 +364,8 @@ function transformEquipment(eq, icon) {
             effects: (suitDef.effects || []).map((e) => ({ num: e.num, desc: e.desc })),
           }
         : null,
+      // Tier B: affixes that can roll on this exact item tier (recon §13.6).
+      rollableAffixes: affixesFor(it),
       imageUrl: icon(it.icon, 'item'),
     };
   });
@@ -416,10 +464,276 @@ function transformMaps(mapIndex, spawnsFile, icon) {
 }
 
 // ---------------------------------------------------------------------------
+// Tier A/B transforms (recon §13)
+// ---------------------------------------------------------------------------
+
+// Skill/rune/pet descriptions carry Unity rich-text markup — strip to plain.
+const stripMarkup = (s) =>
+  typeof s === 'string'
+    ? s.replace(/<color=#?[0-9a-zA-Z]+>/g, '').replace(/<\/color>/g, '').replace(/<\/?b>/g, '').trim()
+    : null;
+
+// Skills: 48 per-job files; skill keys are globally unique and repeat down a
+// class line (Knight → Lord Knight → Rune Knight) with byte-identical content
+// (verified) — dedupe by key, accumulate the job list.
+function transformSkills(jobFiles, icon) {
+  const docs = new Map();
+  const KINDS = [
+    ['skills', 'Skill'],
+    ['unique_skills', 'Unique'],
+    ['traits', 'Trait'],
+  ];
+  for (const jf of jobFiles) {
+    const jobName = jf.job_name || `Job ${jf.job_id}`;
+    for (const [cat, kind] of KINDS) {
+      for (const [key, s] of Object.entries(jf[cat] || {})) {
+        const id = Number(key);
+        if (!Number.isFinite(id)) continue;
+        const existing = docs.get(id);
+        if (existing) {
+          if (!existing.jobIds.includes(jf.job_id)) {
+            existing.jobIds.push(jf.job_id);
+            existing.jobs.push(jobName);
+            existing.jobsLower.push(jobName.toLowerCase());
+          }
+          continue;
+        }
+        const levels = Object.entries(s.levels || {})
+          .map(([lv, d]) => ({
+            level: Number(lv),
+            skillId: d.skill_id ?? null,
+            desc: stripMarkup(d.des),
+            spCost: d.mana_cost ?? null,
+            cooldownMs: d.cooldown ?? null,
+            rangeMax: d.range_max ?? null,
+          }))
+          .sort((a, b) => a.level - b.level);
+        const lv1 = (s.levels || {})['1'] || {};
+        docs.set(id, {
+          _id: id,
+          name: s.name ?? null,
+          nameLower: lower(s.name),
+          kind,
+          jobs: [jobName],
+          jobsLower: [jobName.toLowerCase()],
+          jobIds: [jf.job_id],
+          description: stripMarkup(s.skilldes),
+          naturalMaxLevel: s.natural_max_level ?? null,
+          maxLevel: s.max_level ?? null,
+          tags: (lv1.skill_tags || []).map((t) => t.name).filter(Boolean),
+          imageUrl: icon(s.icon, 'skill'),
+          levels,
+        });
+      }
+    }
+  }
+  return [...docs.values()];
+}
+
+// Runes: the lookup entity is the named effect group (33). Element/crystal
+// resonance is resolved from the level-1 elementId. Rune ("ember") icons are
+// NOT in icon_paths — the site builds `${emberBasePath}${icon}_${color}.webp`
+// (verified 200 for icon_ember_01_3/4/5.webp; bare icon_ember_01.webp is 404).
+function transformRunes(runes) {
+  const elements = runes.elements || {};
+  return Object.values(runes.effectGroups || {}).map((g) => {
+    const rawLevels = Object.values(g.levels || {}).sort((a, b) => (a.level ?? 0) - (b.level ?? 0));
+    const levels = rawLevels.map((l) => ({
+      level: l.level,
+      desc: stripMarkup(l.desc),
+      color: l.color ?? null,
+    }));
+    const el = elements[String(rawLevels[0]?.elementId ?? '')] || null;
+    const iconColor = rawLevels[0]?.color;
+    return {
+      _id: g.group,
+      name: g.name ?? null,
+      nameLower: lower(g.name),
+      imageUrl: g.icon && iconColor != null
+        ? `${IMAGE_BASE}ember/${g.icon}_${iconColor}.webp`
+        : null,
+      element: el
+        ? { id: el.id, name: el.name ?? null, resonance: el.resonance ?? null }
+        : null,
+      levels,
+    };
+  });
+}
+
+// Refine: 20 per-level docs (_id = current level). Global config (safe levels,
+// pity, tier groups) goes to rodb_meta as 'refine_config'.
+function transformRefine(refine) {
+  const iconUrl = (obj) => (obj?.iconPath ? `${BASE}${obj.iconPath}` : null);
+  const levels = (refine.levels || []).map((l) => ({
+    _id: l.level,
+    targetLevel: l.targetLevel ?? l.level + 1,
+    successPct: l.success ?? null,
+    downgradePct: l.downgrade ?? null,
+    failPct: l.fail ?? null,
+    material: l.material?.item
+      ? {
+          itemId: l.material.item.itemId,
+          name: l.material.item.name ?? null,
+          quality: l.material.item.quality ?? null,
+          amount: l.material.amount ?? null,
+          imageUrl: iconUrl(l.material.item),
+          replaceCurrencyAmount: l.material.replaceCurrency?.amount ?? null,
+        }
+      : null,
+    consumable: l.consumable?.item
+      ? { name: l.consumable.item.name ?? null, amount: l.consumable.amount ?? null }
+      : null,
+  }));
+  const config = {
+    _id: 'refine_config',
+    maxLevel: refine.maxLevel ?? null,
+    safeLevels: refine.safeLevels || [],
+    pityBonuses: refine.pityBonuses || {},
+    replacementCurrency: refine.replacementCurrency?.name ?? null,
+    groups: (refine.groups || []).map((gr) => ({
+      label: gr.label ?? gr.key ?? null,
+      startLevel: gr.startLevel ?? null,
+      endLevel: gr.endLevel ?? null,
+      material: gr.material?.name ?? null,
+    })),
+  };
+  return { levels, config };
+}
+
+// Pets: 28. Keep level buffs (max-level attr totals), named per-level skill
+// unlocks, and the current-max form of each combat skill.
+function transformPets(petFile) {
+  return (petFile.pets || []).map((p) => {
+    const levels = Array.isArray(p.levels) ? p.levels : [];
+    const withAttrs = levels.filter((l) => (l.skill?.attrs || []).length);
+    const maxAttrs = withAttrs.length ? withAttrs[withAttrs.length - 1] : null;
+    const namedUnlocks = levels
+      .filter((l) => l.skill?.name)
+      .map((l) => ({ level: l.level, name: l.skill.name, desc: stripMarkup(l.skill.description) }));
+    const combatSkills = (p.combatSkills || []).map((cs) => {
+      const unlocks = cs.unlocks || [];
+      const top = unlocks.length ? unlocks[unlocks.length - 1].skill : null;
+      return top
+        ? {
+            typeLabel: cs.typeLabel ?? null,
+            name: top.name ?? null,
+            desc: stripMarkup(top.description),
+            cooldownSeconds: top.cooldownSeconds ?? null,
+            element: top.elementName ?? null,
+            maxUnlockLevel: unlocks[unlocks.length - 1].level ?? null,
+          }
+        : null;
+    }).filter(Boolean);
+    return {
+      _id: p.id,
+      name: p.name ?? null,
+      nameLower: lower(p.name),
+      qualityTag: p.quality?.tag ?? null,
+      qualityName: p.quality?.name ?? null,
+      imageUrl: p.iconUrl ? `${BASE}${p.iconUrl}` : null,
+      maxLevel: levels.length ? levels[levels.length - 1].level : null,
+      battleStats: p.battleStats ?? null,
+      maxLevelBuffs: maxAttrs
+        ? {
+            level: maxAttrs.level,
+            attrs: (maxAttrs.skill.attrs || []).map((a) => ({
+              name: a.name,
+              value: a.value,
+              isPercent: !!a.isPercentage,
+              target: a.target ?? null,
+            })),
+          }
+        : null,
+      namedUnlocks,
+      combatSkills,
+    };
+  });
+}
+
+// Shop: 599 listings across 25 NPC stores; _id = listing id (itemId repeats
+// across stores). purchaseOptions carry resolved currency names.
+function transformShop(shop) {
+  return (shop.items || []).map((s) => ({
+    _id: s.id,
+    itemId: s.itemId ?? null,
+    name: s.name ?? null,
+    nameLower: lower(s.name),
+    desc: s.desc || null,
+    story: s.story || null,
+    quality: s.quality ?? null,
+    imageUrl: s.iconPath ? `${BASE}${s.iconPath}` : null,
+    store: s.storeName ?? null,
+    tab: s.tabName ?? null,
+    itemNum: s.itemNum ?? null,
+    prices: (s.purchaseOptions || []).map((o) => ({
+      currency: o.currencyName ?? null,
+      amount: o.amount ?? null,
+      mode: o.mode ?? null,
+    })),
+    limitNum: s.limitNum ?? null,
+    requiredLevel: s.requiredLevel ?? null,
+    binding: s.binding === 1,
+    unlockNotes: (s.showUnlockDescriptions || []).filter(Boolean),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Tier B cross-link builders
+// ---------------------------------------------------------------------------
+
+// equipment → rollable affixes. Exact join (recon §13.6): weapon itemSubtype
+// ids (7001–7021) ARE the package-index weapon_type keys, armor/cape
+// assemblyType (4/7) ARE the armor package keys, and openLevels match the
+// bracket keys exactly. Anything that doesn't match exactly gets NO field —
+// never approximate a bracket.
+function makeAffixResolver(stuntLib, pkgIndex) {
+  const packages = stuntLib.packages || {};
+  const weaponPkgs = pkgIndex.weapon_packages_by_type_and_level || {};
+  const armorPkgs = pkgIndex.armor_packages_by_type_and_level || {};
+  return (item) => {
+    const lvl = String(item.openLevel ?? '');
+    const pkgIds =
+      weaponPkgs[String(item.itemSubtype)]?.[lvl] ||
+      armorPkgs[String(item.assemblyType)]?.[lvl] ||
+      null;
+    if (!Array.isArray(pkgIds) || !pkgIds.length) return [];
+    const names = new Map(); // name -> max level seen
+    for (const pid of pkgIds) {
+      for (const e of packages[String(pid)]?.entries || []) {
+        const st = e.stunt;
+        if (!st?.name) continue;
+        const prev = names.get(st.name) || 0;
+        if ((st.level || 0) > prev) names.set(st.name, st.level || 0);
+      }
+    }
+    return [...names.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([name, maxLevel]) => ({ name, maxLevel }));
+  };
+}
+
+// monster → maps it spawns on (reverse of the sparse 36/354 spawn views).
+function buildMonsterFoundIn(maps) {
+  const byMonster = new Map();
+  for (const m of maps) {
+    for (const s of m.spawns || []) {
+      if (!byMonster.has(s.monsterId)) byMonster.set(s.monsterId, []);
+      byMonster.get(s.monsterId).push({
+        mapId: m._id,
+        mapName: m.name,
+        region: m.region,
+        spawnSpots: s.spawnSpots ?? null,
+      });
+    }
+  }
+  return byMonster;
+}
+
+// ---------------------------------------------------------------------------
 // Load
 // ---------------------------------------------------------------------------
 
-async function upsertAll(db, collName, docs) {
+async function upsertAll(db, collName, docs, { nameIndexes = true, extraIndexes = [] } = {}) {
   if (!ALLOWED_COLLECTIONS.has(collName)) {
     throw new Error(`refusing to touch non-rodb collection: ${collName}`);
   }
@@ -435,8 +749,13 @@ async function upsertAll(db, collName, docs) {
     upserted += res.upsertedCount;
     modified += res.modifiedCount;
   }
-  await coll.createIndex({ nameLower: 1 });
-  await coll.createIndex({ name: 'text' });
+  if (nameIndexes) {
+    await coll.createIndex({ nameLower: 1 });
+    await coll.createIndex({ name: 'text' });
+  }
+  for (const idx of extraIndexes) {
+    await coll.createIndex(idx);
+  }
   const total = await coll.countDocuments();
   console.log(`[load] ${collName}: ${docs.length} docs (${upserted} new, ${modified} updated) — collection now ${total}`);
   return total;
@@ -451,17 +770,29 @@ async function main() {
 
   console.log('=== RoworldDB import ===');
   const { data, info } = await ensureSnapshot();
+  const jobFiles = await ensureJobFiles(data['skills_index_en-US.json'] || { jobs: {} });
 
   const iconPaths = data['icon_paths.json'] || {};
   const icon = makeIconResolver(iconPaths);
 
   console.log('[transform] building documents…');
-  const monsters = transformMonsters(data['monster_album_en-US.json'], icon);
-  const equipment = transformEquipment(data['equipment_en-US.json'], icon);
-  const cards = transformCards(data['handbook_cards_en-US.json'], data['monster_album_en-US.json'], icon);
   const maps = transformMaps(data['map_index_en-US.json'], data['map_monster_spawns_en-US.json'], icon);
+  const foundIn = buildMonsterFoundIn(maps);
+  const monsters = transformMonsters(data['monster_album_en-US.json'], icon, foundIn);
+  const affixesFor = makeAffixResolver(
+    data['stunt_skill_library_en-US.json'] || {},
+    data['stunt_package_index_en-US.json'] || {},
+  );
+  const equipment = transformEquipment(data['equipment_en-US.json'], icon, affixesFor);
+  const cards = transformCards(data['handbook_cards_en-US.json'], data['monster_album_en-US.json'], icon);
+  const skills = transformSkills(jobFiles, icon);
+  const runes = transformRunes(data['engine_runes_en-US.json'] || {});
+  const refine = transformRefine(data['refine_en-US.json'] || {});
+  const pets = transformPets(data['pet_library_en-US.json'] || {});
+  const shop = transformShop(data['shop_en-US.json'] || {});
   console.log(
     `[transform] monsters=${monsters.length} equipment=${equipment.length} cards=${cards.length} maps=${maps.length}` +
+    ` skills=${skills.length} runes=${runes.length} refine=${refine.levels.length} pets=${pets.length} shop=${shop.length}` +
     ` (icons unresolved via icon_paths: ${icon.unresolvedCount()} — heuristic fallback used)`,
   );
 
@@ -476,10 +807,16 @@ async function main() {
       equipment: await upsertAll(db, 'rodb_equipment', equipment),
       cards: await upsertAll(db, 'rodb_cards', cards),
       maps: await upsertAll(db, 'rodb_maps', maps),
+      skills: await upsertAll(db, 'rodb_skills', skills),
+      runes: await upsertAll(db, 'rodb_runes', runes),
+      refine: await upsertAll(db, 'rodb_refine', refine.levels, { nameIndexes: false }),
+      pets: await upsertAll(db, 'rodb_pets', pets),
+      shop: await upsertAll(db, 'rodb_shop', shop, { extraIndexes: [{ itemId: 1 }] }),
     };
 
     if (!ALLOWED_COLLECTIONS.has('rodb_meta')) throw new Error('unreachable');
-    await db.collection('rodb_meta').replaceOne(
+    const meta = db.collection('rodb_meta');
+    await meta.replaceOne(
       { _id: 'snapshot' },
       {
         _id: 'snapshot',
@@ -492,6 +829,22 @@ async function main() {
       },
       { upsert: true },
     );
+    // Per-section provenance (assetVersion is site-global; recorded per
+    // section so a future partial refresh can stamp sections independently).
+    for (const [section, count] of Object.entries(counts)) {
+      await meta.replaceOne(
+        { _id: `section_${section}` },
+        {
+          _id: `section_${section}`,
+          assetVersion: info.assetVersion || 'unknown',
+          importedAt: new Date(),
+          count,
+        },
+        { upsert: true },
+      );
+    }
+    // Refine global config (safe levels, pity bonuses, tier groups).
+    await meta.replaceOne({ _id: 'refine_config' }, refine.config, { upsert: true });
     console.log('[load] rodb_meta updated:', JSON.stringify(counts));
     console.log('=== Import complete ===');
   } finally {
@@ -499,7 +852,27 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('Import failed:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Import failed:', err);
+    process.exit(1);
+  });
+}
+
+// Exported for offline verification (scripts run main() only when invoked
+// directly via `node scripts/import-roworlddb.js`).
+module.exports = {
+  transformMonsters,
+  transformEquipment,
+  transformCards,
+  transformMaps,
+  transformSkills,
+  transformRunes,
+  transformRefine,
+  transformPets,
+  transformShop,
+  makeAffixResolver,
+  buildMonsterFoundIn,
+  makeIconResolver,
+  ALLOWED_COLLECTIONS,
+};
