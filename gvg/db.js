@@ -53,6 +53,12 @@
 //       startedAt:  Date,
 //       endsAt:     Date,
 //       vcs:        [{ channelId, label, guild }],   — VCs selected for this run
+//       expected:   { daddy?: [{ userId, displayName }],   — roster snapshot at
+//                     mummy?: [{ userId, displayName }] }    session START; a
+//                     guild key only if it's in the schedule's target. {} when
+//                     the roster was unavailable at start (web app treats a
+//                     missing/empty expected as "no roster data" → excluded
+//                     from attendance-rate denominators).
 //       members:    { <channelId>: { <userId>: {
 //                       userId, username, displayName,
 //                       firstSeenAt: Date, lastSeenAt: Date } } },
@@ -62,7 +68,11 @@
 //       result: [{ channelId, label, guild, count, flaggedCount,
 //                  members: [{ userId, username, displayName, firstSeenAt,
 //                              lastSeenAt, onRoster, flagged }] }],
-//       postedMessageId: string | null,   — the attendance-log message
+//       postedMessageIds: string[],        — every attendance-log message
+//                                            (the log paginates across
+//                                            multiple embeds/messages for
+//                                            large guilds)
+//       postedMessageId:  string | null,   — first id (back-compat)
 //     }
 // ---------------------------------------------------------------------------
 
@@ -235,7 +245,7 @@ async function removeVoiceChannel(id) {
 
 // Create the in_progress capture doc at window start (with the start
 // snapshot's members already filled in). Returns the id string, or null.
-async function createCapture({ schedule, guildId, startedAt, endsAt, vcs, members }) {
+async function createCapture({ schedule, guildId, startedAt, endsAt, vcs, members, expected }) {
   if (!isReady()) return null;
   const res = await attendanceCol.insertOne({
     status: 'in_progress',
@@ -245,6 +255,10 @@ async function createCapture({ schedule, guildId, startedAt, endsAt, vcs, member
     endsAt,
     vcs,
     members: members || {},
+    // Roster snapshot at session start — who was EXPECTED. Persisted here so it
+    // survives a restart and is present on the completed doc (completeCapture
+    // never overwrites it). {} when the roster was unavailable at start.
+    expected: expected || {},
   });
   return String(res.insertedId);
 }
@@ -282,11 +296,14 @@ async function getInProgressCaptures() {
 }
 
 // Finalize a capture: status completed + the compiled per-VC result (roster
-// flags included) + the posted log message id. Returns true on success.
-async function completeCapture(captureId, { rosterAvailable, result, postedMessageId }) {
+// flags included) + EVERY posted log message id. The paginated log can span
+// several messages, so postedMessageIds is an array; postedMessageId keeps the
+// first id for backward-compatible single-id readers. Returns true on success.
+async function completeCapture(captureId, { rosterAvailable, result, postedMessageIds }) {
   if (!isReady()) return false;
   const oid = toObjectId(captureId);
   if (!oid) return false;
+  const ids = Array.isArray(postedMessageIds) ? postedMessageIds : [];
   await attendanceCol.updateOne(
     { _id: oid },
     {
@@ -295,7 +312,8 @@ async function completeCapture(captureId, { rosterAvailable, result, postedMessa
         completedAt: new Date(),
         rosterAvailable,
         result,
-        postedMessageId: postedMessageId || null,
+        postedMessageIds: ids,
+        postedMessageId: ids[0] || null,
       },
     },
   );

@@ -34,9 +34,12 @@ const {
   GVG_TZ_OFFSET_HOURS,
   GVG_TZ_LABEL,
   GUILD_LABELS,
-  LOG_INLINE_MEMBER_CAP,
-  LOG_FIELD_CHAR_BUDGET,
-  LOG_EMBED_TOTAL_BUDGET,
+  MAX_FIELD_VALUE_CHARS,
+  MAX_NAME_LINE_CHARS,
+  MAX_FIELDS_PER_EMBED,
+  MAX_EMBED_TOTAL_CHARS,
+  MAX_EMBEDS_PER_MESSAGE,
+  EMBED_CHAR_SAFETY,
 } = require('./constants');
 
 // captureId (string) → active capture state:
@@ -107,6 +110,39 @@ async function snapshotVcs(client, capture) {
 }
 
 // ---------------------------------------------------------------------------
+// Snapshot the EXPECTED roster at session start — who *should* attend, so the
+// web app can compute attendance % and absentee lists. Read-only from
+// roster/db.js (Daddy = members with isMain, Mummy = isSub). Done ONCE per
+// capture. Shape (exact web-app contract):
+//   { daddy?: [{ userId, displayName }], mummy?: [{ userId, displayName }] }
+// A guild key is included ONLY if that guild is in the schedule target. If the
+// roster is unavailable at start, returns {} (no keys) and logs a warning —
+// the capture still proceeds; the web app treats missing/empty expected as
+// "no roster data" (excluded from rate denominators). Never throws.
+// ---------------------------------------------------------------------------
+async function snapshotExpectedRoster(target) {
+  if (!rosterDb.isReady()) {
+    console.warn('[gvg/capture] Roster unavailable at capture start — expected-roster snapshot skipped (attendance % will be unavailable for this session).');
+    return {};
+  }
+  const want = target === 'both' ? ['daddy', 'mummy'] : [target];
+  const expected = {};
+  for (const g of want) {
+    try {
+      const members = await rosterDb.getMembers(g);
+      expected[g] = members.map(m => ({
+        userId: m.userId,
+        displayName: m.displayName || m.username || m.userId,
+      }));
+    } catch (err) {
+      // Resilient: skip just this guild key on a partial roster failure.
+      console.warn(`[gvg/capture] Expected-roster read failed for ${g} — omitting from snapshot:`, err?.message || err);
+    }
+  }
+  return expected;
+}
+
+// ---------------------------------------------------------------------------
 // startCapture(client, schedule) — the scheduler's fire handler.
 // ---------------------------------------------------------------------------
 async function startCapture(client, schedule) {
@@ -145,6 +181,10 @@ async function startCapture(client, schedule) {
     endTimer: null,
   };
 
+  // Snapshot who was EXPECTED (guild roster at session start) BEFORE persisting
+  // the doc, so it's stored from the very first write and survives a restart.
+  const expected = await snapshotExpectedRoster(target);
+
   // Persist the in_progress doc FIRST (empty members) so even a crash during
   // the snapshot leaves a resumable record.
   capture.captureId = await db.createCapture({
@@ -154,6 +194,7 @@ async function startCapture(client, schedule) {
     endsAt,
     vcs,
     members: {},
+    expected,
   });
   if (!capture.captureId) {
     console.warn(`[gvg/capture] Could not persist capture (DB not ready) — skipping window (${slotLabel}).`);
@@ -282,8 +323,99 @@ async function compileResult(capture) {
   return { rosterAvailable, result };
 }
 
+// Discord's embed character count: title + description + every field name +
+// every field value (footer/author unused here). Mirrors the API's 6000/embed
+// accounting so the packer can respect it exactly.
+function embedCharCount(embedData) {
+  let n = (embedData.title || '').length + (embedData.description || '').length;
+  for (const f of embedData.fields || []) n += (f.name || '').length + (f.value || '').length;
+  return n;
+}
+
+// Render ALL of a capture's members into embed fields — every name inline, no
+// truncation. Each VC's members are chunked into as many field values as
+// needed (each ≤ MAX_FIELD_VALUE_CHARS); the first chunk's field name carries
+// the "<label> (<guild>) — N present" header, continuation chunks use
+// "<label> …(cont.)". ⚠ flags stay inline beside flagged names.
+function buildMemberFields(result) {
+  const fields = [];
+  for (const vc of result) {
+    const guildLabel = GUILD_LABELS[vc.guild] || vc.guild;
+    const header = `${vc.label} (${guildLabel}) — ${vc.count} present`.slice(0, MAX_NAME_LINE_CHARS);
+    const contHeader = `${vc.label} …(cont.)`.slice(0, MAX_NAME_LINE_CHARS);
+
+    if (!vc.members.length) {
+      fields.push({ name: header, value: '_(no one attended)_', inline: false });
+      continue;
+    }
+
+    const lines = vc.members.map(m =>
+      `${m.flagged ? '⚠ ' : ''}${m.displayName}`.slice(0, MAX_NAME_LINE_CHARS));
+
+    let chunk = [];
+    let len = 0;
+    let first = true;
+    const flush = () => {
+      fields.push({
+        name: first ? header : contHeader,
+        value: chunk.join('\n'),
+        inline: false,
+      });
+      first = false;
+      chunk = [];
+      len = 0;
+    };
+    for (const line of lines) {
+      // +1 for the joining newline. Never let a value exceed 1024.
+      if (chunk.length && len + line.length + 1 > MAX_FIELD_VALUE_CHARS) flush();
+      chunk.push(line);
+      len += line.length + 1;
+    }
+    if (chunk.length) flush();
+  }
+  return fields;
+}
+
+// The complete-record text file: every member, every VC, with username, guild,
+// flag, and first-seen (GMT+7). Always attached to the first log message.
+function buildFullFile(capture, result, rosterAvailable) {
+  const s = capture.schedule;
+  const title = `GvG Attendance — ${s.day} ${s.time} ${GVG_TZ_LABEL} (${GUILD_LABELS[s.guild] || s.guild})`;
+  const fileLines = [
+    title,
+    ...(s.label ? [s.label] : []),
+    `Window: ${capture.startedAt.toISOString()} -> ${capture.endsAt.toISOString()} (${s.durationMin} min)`,
+    rosterAvailable ? 'Flag legend: [!] = not on that VC\'s guild roster' : 'Roster unavailable — no flags.',
+    '',
+  ];
+  for (const vc of result) {
+    fileLines.push(`== ${vc.label} (${GUILD_LABELS[vc.guild] || vc.guild}) — ${vc.count} present${vc.flaggedCount ? `, ${vc.flaggedCount} flagged` : ''} ==`);
+    if (!vc.members.length) fileLines.push('(no one attended)');
+    for (const m of vc.members) {
+      fileLines.push(`${m.flagged ? '[!] ' : '    '}${m.displayName} (@${m.username}) — first seen ${hhmmTz(new Date(m.firstSeenAt))} ${GVG_TZ_LABEL}`);
+    }
+    fileLines.push('');
+  }
+  return fileLines.join('\n');
+}
+
 // ---------------------------------------------------------------------------
-// Attendance-log builder — embed + optional full-list file (scale guard).
+// Attendance-log builder — PAGINATED so every attendee is visible inline even
+// for 300+ member guilds. Returns:
+//   { messages, embeds, fileText, fileName }
+//   - messages : array of channel.send() payloads. messages[0] carries the
+//                gvg-attendance.txt attachment (complete backup record).
+//   - embeds   : flat array of EmbedBuilder (embed[0] = summary, no names).
+//   - fileText : the full-list file contents (for tests / re-use).
+//
+// Structure:
+//   • Embed 0 = SUMMARY: title, window, "Attended: N unique across M VC(s)",
+//     roster-check line. NO member names.
+//   • Member fields (buildMemberFields) are packed into CONTENT embeds
+//     respecting BOTH ≤25 fields AND ≤6000 chars per embed; overflow opens a
+//     new content embed.
+//   • Embeds are grouped into messages of ≤10; extra embeds spill into
+//     follow-up messages. content is left empty (embeds carry everything).
 // Exported for synthetic tests.
 // ---------------------------------------------------------------------------
 function buildLog(capture, result, rosterAvailable) {
@@ -308,67 +440,51 @@ function buildLog(capture, result, rosterAvailable) {
       : '⚠️ Roster unavailable — names only, no wrong-VC flags this run.',
   ];
 
-  // Per-field char budget: stay under Discord's 1024/field AND keep the whole
-  // embed under ~6000 even with many VCs.
-  const fieldBudget = Math.max(200, Math.min(
-    LOG_FIELD_CHAR_BUDGET,
-    Math.floor(LOG_EMBED_TOTAL_BUDGET / Math.max(1, result.length)),
-  ));
-
-  let truncated = false;
-  const fields = result.map(vc => {
-    const name = `${vc.label} (${GUILD_LABELS[vc.guild] || vc.guild}) — ${vc.count} present`
-      .slice(0, 256);
-    if (!vc.members.length) return { name, value: '_(no one attended)_', inline: false };
-
-    const shown = [];
-    let len = 0;
-    for (const m of vc.members) {
-      if (shown.length >= LOG_INLINE_MEMBER_CAP) break;
-      const line = `${m.flagged ? '⚠ ' : ''}${m.displayName}`;
-      if (len + line.length + 1 > fieldBudget) break;
-      shown.push(line);
-      len += line.length + 1;
-    }
-    const extra = vc.members.length - shown.length;
-    if (extra > 0) truncated = true;
-    const value = (shown.join('\n') || '…') + (extra > 0 ? `\n… +${extra} more (full list attached)` : '');
-    return { name, value: value.slice(0, 1024), inline: false };
-  });
-
-  const embed = new EmbedBuilder()
-    .setTitle(title.slice(0, 256))
+  const summary = new EmbedBuilder()
+    .setTitle(title.slice(0, MAX_NAME_LINE_CHARS))
     .setDescription(descLines.join('\n'))
     .setColor(0x5865F2)
     .setTimestamp(capture.endsAt);
-  for (const f of fields.slice(0, 25)) embed.addFields(f);
 
-  const payload = { embeds: [embed] };
-
-  // Anything truncated inline → attach the complete attendance as text.
-  if (truncated) {
-    const fileLines = [
-      title,
-      ...(s.label ? [s.label] : []),
-      `Window: ${capture.startedAt.toISOString()} -> ${capture.endsAt.toISOString()} (${s.durationMin} min)`,
-      rosterAvailable ? 'Flag legend: [!] = not on that VC\'s guild roster' : 'Roster unavailable — no flags.',
-      '',
-    ];
-    for (const vc of result) {
-      fileLines.push(`== ${vc.label} (${GUILD_LABELS[vc.guild] || vc.guild}) — ${vc.count} present${vc.flaggedCount ? `, ${vc.flaggedCount} flagged` : ''} ==`);
-      if (!vc.members.length) fileLines.push('(no one attended)');
-      for (const m of vc.members) {
-        fileLines.push(`${m.flagged ? '[!] ' : '    '}${m.displayName} (@${m.username}) — first seen ${hhmmTz(new Date(m.firstSeenAt))} ${GVG_TZ_LABEL}`);
-      }
-      fileLines.push('');
+  // Pack member fields into content embeds: ≤25 fields AND ≤6000 chars each
+  // (safety-margined). Field values are already ≤1024 by construction.
+  const memberFields = buildMemberFields(result);
+  const contentEmbeds = [];
+  let curFields = [];
+  let curChars = 0;
+  const flushEmbed = () => {
+    const e = new EmbedBuilder().setColor(0x5865F2);
+    e.addFields(curFields);
+    contentEmbeds.push(e);
+    curFields = [];
+    curChars = 0;
+  };
+  for (const f of memberFields) {
+    const fChars = f.name.length + f.value.length;
+    if (curFields.length &&
+        (curFields.length >= MAX_FIELDS_PER_EMBED || curChars + fChars > EMBED_CHAR_SAFETY)) {
+      flushEmbed();
     }
-    payload.files = [new AttachmentBuilder(
-      Buffer.from(fileLines.join('\n'), 'utf8'),
-      { name: 'gvg-attendance.txt' },
-    )];
+    curFields.push(f);
+    curChars += fChars;
+  }
+  if (curFields.length) flushEmbed();
+
+  const embeds = [summary, ...contentEmbeds];
+
+  // Group embeds into messages of ≤10; the rest spill into follow-ups.
+  const fileText = buildFullFile(capture, result, rosterAvailable);
+  const file = new AttachmentBuilder(Buffer.from(fileText, 'utf8'), { name: 'gvg-attendance.txt' });
+
+  const messages = [];
+  for (let i = 0; i < embeds.length; i += MAX_EMBEDS_PER_MESSAGE) {
+    const slice = embeds.slice(i, i + MAX_EMBEDS_PER_MESSAGE);
+    const payload = { embeds: slice };
+    if (i === 0) payload.files = [file]; // complete record on the first message
+    messages.push(payload);
   }
 
-  return payload;
+  return { messages, embeds, fileText, fileName: 'gvg-attendance.txt' };
 }
 
 // ---------------------------------------------------------------------------
@@ -379,14 +495,25 @@ async function endCapture(client, capture) {
   activeCaptures.delete(capture.captureId);
 
   const { rosterAvailable, result } = await compileResult(capture);
-  const payload = buildLog(capture, result, rosterAvailable);
+  const { messages } = buildLog(capture, result, rosterAvailable);
 
-  let postedMessageId = null;
+  // Post the paginated log: one or more messages (each ≤10 embeds), the full
+  // gvg-attendance.txt on the first. Persist EVERY posted message id so a
+  // large multi-message log is fully recorded. A mid-batch send failure keeps
+  // the ids already posted (partial log is better than none) and never throws.
+  const postedMessageIds = [];
   try {
     const channel = await client.channels.fetch(LOG_CHANNEL_ID);
     if (channel?.isTextBased?.()) {
-      const msg = await channel.send(payload);
-      postedMessageId = msg?.id || null;
+      for (const payload of messages) {
+        try {
+          const msg = await channel.send(payload);
+          if (msg?.id) postedMessageIds.push(msg.id);
+        } catch (err) {
+          console.warn(`[gvg/capture] A log message failed to send (posted ${postedMessageIds.length}/${messages.length} so far):`, err?.message || err);
+          break;
+        }
+      }
     } else {
       console.warn(`[gvg/capture] Log channel ${LOG_CHANNEL_ID} is not a text channel — attendance not posted (still persisted).`);
     }
@@ -394,8 +521,8 @@ async function endCapture(client, capture) {
     console.warn(`[gvg/capture] Could not post attendance log to ${LOG_CHANNEL_ID} (check View/Send/Embed/Attach perms):`, err?.message || err);
   }
 
-  await db.completeCapture(capture.captureId, { rosterAvailable, result, postedMessageId });
-  console.log(`[gvg/capture] Window CLOSED — ${capture.schedule.day} ${capture.schedule.time} ${GVG_TZ_LABEL}; ${result.reduce((n, v) => n + v.count, 0)} attendance rows, posted=${Boolean(postedMessageId)}.`);
+  await db.completeCapture(capture.captureId, { rosterAvailable, result, postedMessageIds });
+  console.log(`[gvg/capture] Window CLOSED — ${capture.schedule.day} ${capture.schedule.time} ${GVG_TZ_LABEL}; ${result.reduce((n, v) => n + v.count, 0)} attendance rows, ${messages.length} message(s), posted ${postedMessageIds.length}.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -463,5 +590,6 @@ module.exports = {
   buildLog,
   compileResult,
   snapshotVcs,
+  snapshotExpectedRoster,
   _activeCapturesForTests: activeCaptures,
 };

@@ -48,15 +48,29 @@ const GUILD_LABELS = { daddy: 'Daddy', mummy: 'Mummy', both: 'Both guilds' };
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 // -------------------------------------------------------------------------
-// Attendance-log scale guard (mirrors /activitycampaign status).
-// Per-VC inline name list is capped by count AND a character budget; when any
-// VC's list is truncated the FULL attendance is attached as a text file.
-// Discord limits: message content 2000, embed field value 1024, embed total
-// 6000 — the budgets below keep the log embed safely inside all three.
+// Attendance-log pagination limits (Discord hard limits — the log builder
+// paginates ALL names across multiple embeds + follow-up messages so every
+// attendee is visible inline, even for 300+ member guilds; the full list is
+// ALSO attached as gvg-attendance.txt on the first message as the complete
+// backup record).
+//   MAX_FIELD_VALUE_CHARS   — Discord embed field value cap.
+//   MAX_NAME_LINE_CHARS     — per-name line cap (a display name plus flag).
+//   MAX_FIELDS_PER_EMBED    — Discord cap of 25 fields/embed.
+//   MAX_EMBED_TOTAL_CHARS   — Discord cap of 6000 chars/embed (title +
+//                             description + all field names + values).
+//   MAX_EMBEDS_PER_MESSAGE  — Discord cap of 10 embeds/message; overflow goes
+//                             into follow-up messages.
+//   MAX_CONTENT_CHARS       — Discord message content cap (we keep it empty).
 // -------------------------------------------------------------------------
-const LOG_INLINE_MEMBER_CAP = 20;   // max names shown inline per VC field
-const LOG_FIELD_CHAR_BUDGET = 900;  // max chars per VC field value (< 1024)
-const LOG_EMBED_TOTAL_BUDGET = 5000; // keep total embed comfortably < 6000
+const MAX_FIELD_VALUE_CHARS = 1024;
+const MAX_NAME_LINE_CHARS = 256;
+const MAX_FIELDS_PER_EMBED = 25;
+const MAX_EMBED_TOTAL_CHARS = 6000;
+const MAX_EMBEDS_PER_MESSAGE = 10;
+const MAX_CONTENT_CHARS = 2000;
+// Safety margin below the hard 6000/embed cap so field-boundary rounding can
+// never tip an embed over the limit.
+const EMBED_CHAR_SAFETY = 5600;
 
 module.exports = {
   GODFATHERS_ROLE_ID,
@@ -71,7 +85,11 @@ module.exports = {
   GUILDS,
   GUILD_LABELS,
   TIME_RE,
-  LOG_INLINE_MEMBER_CAP,
-  LOG_FIELD_CHAR_BUDGET,
-  LOG_EMBED_TOTAL_BUDGET,
+  MAX_FIELD_VALUE_CHARS,
+  MAX_NAME_LINE_CHARS,
+  MAX_FIELDS_PER_EMBED,
+  MAX_EMBED_TOTAL_CHARS,
+  MAX_EMBEDS_PER_MESSAGE,
+  MAX_CONTENT_CHARS,
+  EMBED_CHAR_SAFETY,
 };
