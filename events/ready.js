@@ -12,6 +12,7 @@ const activitySticky = require('../activitycampaign/sticky');
 const gvgDb = require('../gvg/db');
 const gvgScheduler = require('../gvg/scheduler');
 const gvgCapture = require('../gvg/capture');
+const reactionRoleDb = require('../reactionrole/db');
 
 module.exports = {
   name: Events.ClientReady,
@@ -175,6 +176,27 @@ module.exports = {
       }
     } catch (err) {
       console.warn('[ready] GvG attendance init failed (GvG degraded, bot still online):', err?.message || err);
+    }
+
+    // Reaction Roles: connect to MongoDB for the /guildexpedition sign-up
+    // embed (reaction ✅ ↔ Guild Expedition role). Same Atlas cluster; own
+    // client. No resume step needed — the messageReactionAdd/Remove handlers
+    // look every reaction up in reactionrole_messages directly (zero
+    // in-memory state), so already-posted embeds work as soon as the store
+    // is ready. Degrades gracefully — no MONGODB_URI or Atlas unreachable
+    // means /guildexpedition replies "unavailable" and reactions on old
+    // embeds are inert until the DB is back. initSchema() never throws.
+    try {
+      const ok = await reactionRoleDb.initSchema();
+      if (ok) {
+        console.log('[ready] Reaction-role store ready (MongoDB).');
+      } else if (process.env.MONGODB_URI) {
+        console.warn('[ready] Reaction roles disabled — could not connect to MongoDB (check Atlas Network Access / URI).');
+      } else {
+        console.warn('[ready] Reaction roles disabled — MONGODB_URI not set.');
+      }
+    } catch (err) {
+      console.warn('[ready] Reaction-role init failed (reaction roles degraded, bot still online):', err?.message || err);
     }
   },
 };

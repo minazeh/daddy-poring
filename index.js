@@ -11,7 +11,10 @@ const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js'
 // invite, expression, webhook, scheduled-event, and automod intents so the
 // corresponding gateway + audit-log-entry events fire. All are enabled in the
 // Dev Portal (Conrad confirmed). Partials let uncached message deletes and
-// user/member updates still emit so they can be logged.
+// user/member updates still emit so they can be logged. GuildMessageReactions
+// + Partials.Reaction power the /guildexpedition reaction-role embed —
+// reactions on messages posted before a restart arrive partial and are
+// fetched in the handler, so they keep working across Railway redeploys.
 // ---------------------------------------------------------------------------
 const client = new Client({
   intents: [
@@ -28,12 +31,17 @@ const client = new Client({
     GatewayIntentBits.AutoModerationExecution,    // automod rule-triggered logging
     GatewayIntentBits.GuildVoiceStates,           // GvG attendance — read VC membership +
                                                   // voiceStateUpdate joins (non-privileged)
+    GatewayIntentBits.GuildMessageReactions,      // /guildexpedition reaction roles —
+                                                  // messageReactionAdd/Remove (non-privileged)
   ],
   partials: [
-    Partials.Message,       // log deletes of messages that weren't in cache
+    Partials.Message,       // log deletes of messages that weren't in cache +
+                            // reaction-role reactions on uncached/old messages
     Partials.Channel,       // required alongside Partials.Message
     Partials.GuildMember,   // uncached member on leave
     Partials.User,          // uncached user on update
+    Partials.Reaction,      // reactions on messages not in cache (reaction roles
+                            // must survive restarts — handler fetches, then acts)
   ],
 });
 

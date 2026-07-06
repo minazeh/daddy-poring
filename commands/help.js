@@ -4,6 +4,7 @@ const { OFFICER_ROLE_IDS } = require('../officerapp/constants');
 const { PARTYFINDER_ROLE_IDS } = require('../partyfinder/constants');
 const { GODFATHERS_ROLE_ID } = require('../activitycampaign/constants');
 const { GODFATHERS_ROLE_ID: GVG_GODFATHERS_ROLE_ID } = require('../gvg/constants');
+const { GODFATHERS_ROLE_ID: RR_GODFATHERS_ROLE_ID } = require('../reactionrole/constants');
 
 // ---------------------------------------------------------------------------
 // Command metadata — single source of truth for the help list.
@@ -59,6 +60,13 @@ const COMMANDS = [
     description: 'Manages the voice channels monitored for GvG attendance — tag each VC Daddy or Mummy so attendees are checked against the right roster.',
     category: 'Leadership',
     access: [GVG_GODFATHERS_ROLE_ID],
+  },
+  {
+    name: 'guildexpedition',
+    usage: '/guildexpedition [channel]',
+    description: 'Posts the Guild Expedition sign-up embed — members react ✅ to get the Guild Expedition role and remove the reaction to drop it.',
+    category: 'Leadership',
+    access: [RR_GODFATHERS_ROLE_ID],
   },
   {
     name: 'memberclasses',
