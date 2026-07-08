@@ -1,12 +1,16 @@
 // ---------------------------------------------------------------------------
-// In-memory tracking of active party requests and carry requests.
+// Tracking of active party requests and carry requests.
 // JS port of the reference party_state.py.
 //
-// Parties/carries are short-lived (recruitment closes ~15 min before start), so we don't
-// need a database — Maps keyed by an incrementing id are sufficient and avoid
-// extra deployment complexity. In-memory only is intentional (v1): state is
-// lost on restart — accepted tradeoff, same as the source.
+// The in-memory Maps below remain the authoritative store for the running
+// process (v1 behavior, unchanged). v2 adds a Mongo WRITE-THROUGH: every
+// mutation is mirrored fire-and-forget into partyfinder/db.js so open cards
+// can be rehydrated after a restart (partyfinder/resume.js). If the DB is
+// down/unconfigured, the mirror silently no-ops and the feature behaves
+// exactly like v1 — in-memory only, lost on restart, never crashes.
 // ---------------------------------------------------------------------------
+
+const pfdb = require('./db');
 
 let _idCounter = 0;
 
@@ -18,6 +22,29 @@ const ACTIVE_CARRY_REQUESTS = new Map();
 function newId() {
   _idCounter += 1;
   return String(_idCounter);
+}
+
+// Restore the id high-water mark on boot (resume.js). The counter resets to 0
+// on restart; without this, fresh ids would collide with ids persisted before
+// the restart. Only ever raises the counter — never lowers it.
+function restoreIdCounter(maxId) {
+  const n = Number(maxId);
+  if (Number.isFinite(n) && n > _idCounter) _idCounter = n;
+}
+
+// ---------------------------------------------------------------------------
+// Fire-and-forget write-through. A user interaction must never fail because
+// Atlas hiccuped — in-memory state stays authoritative for this process and
+// the mirror catches up on the next mutation. db helpers no-op when not ready.
+// ---------------------------------------------------------------------------
+function persistParty(party) {
+  pfdb.upsertParty(party).catch(err =>
+    console.warn('[partyfinder/state] Party write-through failed (in-memory state unaffected):', err?.message || err));
+}
+
+function persistCarry(req) {
+  pfdb.upsertCarry(req).catch(err =>
+    console.warn('[partyfinder/state] Carry write-through failed (in-memory state unaffected):', err?.message || err));
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +74,7 @@ function createParty({
   slots[leaderCategory].push({ userId: leaderId, name: leaderName });
 
   const party = {
+    id: partyId, // own id on the object so write-through helpers can key the doc
     leaderId,
     leaderName,
     eventName,
@@ -62,6 +90,7 @@ function createParty({
     closed: false,
   };
   ACTIVE_PARTIES.set(partyId, party);
+  persistParty(party);
   return party;
 }
 
@@ -98,15 +127,27 @@ function currentCategory(party, userId) {
 
 function addMember(party, category, userId, name) {
   party.slots[category].push({ userId, name });
+  persistParty(party);
 }
 
 // Remove the user from the given category's slot array (no-op if absent).
 function removeMember(party, category, userId) {
   party.slots[category] = party.slots[category].filter(m => m.userId !== userId);
+  persistParty(party);
 }
 
+// Drop the party from memory AND delete its persisted doc (all close paths —
+// cancel / full / expiry — land here, so the store never accumulates closed docs).
 function removeParty(partyId) {
   ACTIVE_PARTIES.delete(partyId);
+  pfdb.deleteParty(partyId).catch(err =>
+    console.warn('[partyfinder/state] Party doc delete failed (in-memory state unaffected):', err?.message || err));
+}
+
+// Boot-time rehydration (resume.js) — seed the Map WITHOUT writing back to the
+// DB (the doc is already the source we just read).
+function restoreParty(partyId, party) {
+  ACTIVE_PARTIES.set(partyId, party);
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +166,7 @@ function createCarryRequest({
   channelId,
 }) {
   const req = {
+    id: requestId,
     leaderId,
     leaderName,
     eventName,
@@ -137,6 +179,7 @@ function createCarryRequest({
     closed: false,
   };
   ACTIVE_CARRY_REQUESTS.set(requestId, req);
+  persistCarry(req);
   return req;
 }
 
@@ -146,6 +189,13 @@ function getCarryRequest(requestId) {
 
 function addResponder(req, userId, name) {
   req.responders.push({ userId, name });
+  persistCarry(req);
+}
+
+// Remove the user from the responder list (no-op if absent) — Withdraw button.
+function removeResponder(req, userId) {
+  req.responders = req.responders.filter(r => r.userId !== userId);
+  persistCarry(req);
 }
 
 function hasResponded(req, userId) {
@@ -154,10 +204,26 @@ function hasResponded(req, userId) {
 
 function removeCarryRequest(requestId) {
   ACTIVE_CARRY_REQUESTS.delete(requestId);
+  pfdb.deleteCarry(requestId).catch(err =>
+    console.warn('[partyfinder/state] Carry doc delete failed (in-memory state unaffected):', err?.message || err));
+}
+
+// Boot-time rehydration (resume.js) — no write-back.
+function restoreCarryRequest(requestId, req) {
+  ACTIVE_CARRY_REQUESTS.set(requestId, req);
+}
+
+// Test hook — wipe in-memory state to simulate a process restart. Touches the
+// Maps and counter ONLY (never the DB). Never used at runtime.
+function _resetForTests() {
+  ACTIVE_PARTIES.clear();
+  ACTIVE_CARRY_REQUESTS.clear();
+  _idCounter = 0;
 }
 
 module.exports = {
   newId,
+  restoreIdCounter,
   // parties
   createParty,
   getParty,
@@ -169,10 +235,15 @@ module.exports = {
   addMember,
   removeMember,
   removeParty,
+  restoreParty,
   // carries
   createCarryRequest,
   getCarryRequest,
   addResponder,
+  removeResponder,
   hasResponded,
   removeCarryRequest,
+  restoreCarryRequest,
+  // exported for tests / simulation
+  _resetForTests,
 };

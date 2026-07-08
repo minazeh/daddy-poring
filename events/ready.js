@@ -13,6 +13,8 @@ const gvgDb = require('../gvg/db');
 const gvgScheduler = require('../gvg/scheduler');
 const gvgCapture = require('../gvg/capture');
 const reactionRoleDb = require('../reactionrole/db');
+const partyfinderDb = require('../partyfinder/db');
+const partyfinderResume = require('../partyfinder/resume');
 
 module.exports = {
   name: Events.ClientReady,
@@ -197,6 +199,29 @@ module.exports = {
       }
     } catch (err) {
       console.warn('[ready] Reaction-role init failed (reaction roles degraded, bot still online):', err?.message || err);
+    }
+
+    // Party Finder persistence (v2): connect to MongoDB so party/carry cards
+    // survive restarts. Same Atlas cluster; own client. After a successful
+    // connect, resume() rehydrates every open card into the in-memory Maps,
+    // restores the id counter's high-water mark (so new ids can't collide
+    // with restored ones), and re-arms one expiry timer per card — cards that
+    // expired while the bot was down are closed out immediately. Degrades
+    // gracefully — no MONGODB_URI or Atlas unreachable means Party Finder
+    // works exactly like v1 (in-memory, lost on restart) and the bot boots
+    // fully. initSchema()/resume() never throw to the boot path.
+    try {
+      const ok = await partyfinderDb.initSchema();
+      if (ok) {
+        console.log('[ready] Party-finder store ready (MongoDB).');
+        await partyfinderResume.resume(client);
+      } else if (process.env.MONGODB_URI) {
+        console.warn('[ready] Party-finder persistence disabled — could not connect to MongoDB (cards won\'t survive restarts; check Atlas Network Access / URI).');
+      } else {
+        console.warn('[ready] Party-finder persistence disabled — MONGODB_URI not set (cards won\'t survive restarts).');
+      }
+    } catch (err) {
+      console.warn('[ready] Party-finder persistence init failed (feature still works in-memory, bot still online):', err?.message || err);
     }
   },
 };

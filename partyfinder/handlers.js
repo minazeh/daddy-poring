@@ -266,7 +266,13 @@ function buildPartyJoinComponents(partyId) {
         .setStyle(CATEGORY_STYLE[category]),
     ),
   );
+  // Leave = joined non-leader vacates their own slot; Cancel = leader disbands.
+  // Two dedicated buttons (2/5 in the row) — Cancel semantics are untouched.
   const cancelRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${IDS.LEAVE_PREFIX}:${partyId}`)
+      .setLabel('Leave Party')
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`${IDS.CANCEL_PREFIX}:${partyId}`)
       .setLabel('Cancel (Leader only)')
@@ -282,6 +288,12 @@ function buildCarryComponents(requestId) {
         .setCustomId(`${IDS.CARRY_RESPOND_PREFIX}:${requestId}`)
         .setLabel("I'll carry this")
         .setStyle(ButtonStyle.Success),
+      // Withdraw = a responder removes their own offer; Cancel = requester
+      // closes the whole request. 3/5 buttons in the row — within limits.
+      new ButtonBuilder()
+        .setCustomId(`${IDS.CARRY_WITHDRAW_PREFIX}:${requestId}`)
+        .setLabel('Withdraw')
+        .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`${IDS.CARRY_CANCEL_PREFIX}:${requestId}`)
         .setLabel('Cancel (Requester only)')
@@ -787,6 +799,42 @@ async function handleCancelButton(interaction, partyId) {
   ps.removeParty(partyId);
 }
 
+// Leave Party — a joined NON-LEADER member vacates their own slot. The leader
+// can't leave (they disband via Cancel instead). Only reachable while the card
+// is open: handleJoinButton strips all components the moment the party fills.
+// removeMember write-throughs to Mongo, so the vacated slot survives a restart.
+async function handleLeaveButton(interaction, partyId) {
+  const party = ps.getParty(partyId);
+  if (party === null || party.closed) {
+    await interaction.reply({ content: 'This party has closed.', ephemeral: true });
+    return;
+  }
+
+  if (interaction.user.id === party.leaderId) {
+    await interaction.reply({
+      content: "As the leader, use **Cancel** to disband — you can't leave your own party.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const currentCat = ps.currentCategory(party, interaction.user.id);
+  if (currentCat === null) {
+    await interaction.reply({ content: "You're not in this party.", ephemeral: true });
+    return;
+  }
+
+  ps.removeMember(party, currentCat, interaction.user.id);
+  await interaction.reply({ content: '✅ You left the party.', ephemeral: true });
+
+  // Update the public card — the vacated slot shows _open_ again.
+  try {
+    await interaction.message.edit({ embeds: [buildPartyEmbed(party)] });
+  } catch (err) {
+    console.warn('[partyfinder] Could not update party card after leave:', err?.message || err);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // I Need Carry flow
 // ---------------------------------------------------------------------------
@@ -948,13 +996,48 @@ async function handleCarryCancelButton(interaction, requestId) {
   ps.removeCarryRequest(requestId);
 }
 
+// Withdraw — a carry RESPONDER removes their own offer. The requester can't
+// withdraw (they close via Cancel instead). removeResponder write-throughs to
+// Mongo, so the withdrawal survives a restart.
+async function handleCarryWithdrawButton(interaction, requestId) {
+  const req = ps.getCarryRequest(requestId);
+  if (req === null || req.closed) {
+    await interaction.reply({ content: 'This request has closed.', ephemeral: true });
+    return;
+  }
+
+  if (interaction.user.id === req.leaderId) {
+    await interaction.reply({
+      content: "As the requester, use **Cancel** to close this request — you can't withdraw from it.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (!ps.hasResponded(req, interaction.user.id)) {
+    await interaction.reply({ content: "You haven't responded to this request.", ephemeral: true });
+    return;
+  }
+
+  ps.removeResponder(req, interaction.user.id);
+  await interaction.reply({ content: '✅ You withdrew your carry offer.', ephemeral: true });
+
+  try {
+    await interaction.message.edit({ embeds: [buildCarryEmbed(req)] });
+  } catch (err) {
+    console.warn('[partyfinder] Could not update carry card after withdraw:', err?.message || err);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Auto-expiry — fires AT expiryEpochSecs (15 min before the chosen start time).
 // If still open, BOTH party and carry KEEP the message and edit it to a grey
 // closed state (countdown dropped, buttons removed). Build the closed embed from
 // the still-present item BEFORE dropping state. Delay is clamped to >= 0 (guards
-// the should-not-happen case where expiry is already past). setTimeout-based;
-// max start is ~6h out, well under the ceiling; timers don't survive restart (v1).
+// an already-past expiry — normal after a restart, see below). setTimeout-based;
+// max start is ~6h out, well under the ceiling. Timers don't survive a restart,
+// but resume.js re-arms one per rehydrated card on boot; a card that expired
+// while the bot was down gets delay 0 and is closed out immediately.
 // ---------------------------------------------------------------------------
 function scheduleExpiry(client, kind, id, channelId, messageId, expiryEpochSecs) {
   const delayMs = Math.max(0, expiryEpochSecs * 1000 - Date.now());
@@ -1020,6 +1103,11 @@ async function route(interaction) {
       await handleJoinButton(interaction, parts[2], parts[3]);
       return true;
     }
+    if (id.startsWith(`${IDS.LEAVE_PREFIX}:`)) {
+      // pf:leave:<partyId>
+      await handleLeaveButton(interaction, id.split(':')[2]);
+      return true;
+    }
     if (id.startsWith(`${IDS.CANCEL_PREFIX}:`)) {
       // pf:cancel:<partyId>
       await handleCancelButton(interaction, id.split(':')[2]);
@@ -1028,6 +1116,11 @@ async function route(interaction) {
     if (id.startsWith(`${IDS.CARRY_RESPOND_PREFIX}:`)) {
       // pf:carryrespond:<reqId>
       await handleCarryRespondButton(interaction, id.split(':')[2]);
+      return true;
+    }
+    if (id.startsWith(`${IDS.CARRY_WITHDRAW_PREFIX}:`)) {
+      // pf:carrywithdraw:<reqId>
+      await handleCarryWithdrawButton(interaction, id.split(':')[2]);
       return true;
     }
     if (id.startsWith(`${IDS.CARRY_CANCEL_PREFIX}:`)) {
@@ -1099,5 +1192,7 @@ module.exports = {
   formatGmt7Label,
   buildPartyEmbed,
   buildCarryEmbed,
+  buildPartyJoinComponents,
+  buildCarryComponents,
   scheduleExpiry,
 };

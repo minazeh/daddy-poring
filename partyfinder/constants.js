@@ -15,9 +15,11 @@ const { CLASS_ROLE_BY_ID } = require('../guildapp/constants');
 //   pf:rolesopen:<size>:<cat>:<epoch> (bridge button: Details reply -> Roles modal)
 //   pf:roles:<size>:<cat>:<epoch>     (Roles Needed modal — size + cat + start epoch baked in)
 //   pf:join:<category>:<partyId>      (Join as Tank/Heal/DPS)
+//   pf:leave:<partyId>                (joined non-leader member vacates their own slot)
 //   pf:cancel:<partyId>               (leader cancels the party)
 //   pf:carrydetails                   (I Need Carry — Details modal)
 //   pf:carryrespond:<reqId>           (I'll carry this)
+//   pf:carrywithdraw:<reqId>          (responder withdraws their own carry offer)
 //   pf:carrycancel:<reqId>            (requester cancels the carry)
 //
 // IMPORTANT — Discord forbids responding to a modal-submit interaction with
@@ -36,10 +38,12 @@ const IDS = {
   ROLES_OPEN_PREFIX: 'pf:rolesopen',   // pf:rolesopen:<size>:<leaderCategory>:<startEpochSecs>
   ROLES_PREFIX:   'pf:roles',          // pf:roles:<size>:<leaderCategory>:<startEpochSecs>
   JOIN_PREFIX:    'pf:join',           // pf:join:<category>:<partyId>
+  LEAVE_PREFIX:   'pf:leave',          // pf:leave:<partyId>  (joined member leaves own slot)
   CANCEL_PREFIX:  'pf:cancel',         // pf:cancel:<partyId>
   CARRY_TIME_SELECT: 'pf:carrytime',   // pf:carrytime  (GMT+7 start-time select for carry)
   CARRY_DETAILS:  'pf:carrydetails',   // pf:carrydetails:<startEpochSecs>
   CARRY_RESPOND_PREFIX: 'pf:carryrespond', // pf:carryrespond:<reqId>
+  CARRY_WITHDRAW_PREFIX: 'pf:carrywithdraw', // pf:carrywithdraw:<reqId>  (responder withdraws)
   CARRY_CANCEL_PREFIX:  'pf:carrycancel',  // pf:carrycancel:<reqId>
 };
 
