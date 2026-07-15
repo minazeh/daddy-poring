@@ -221,10 +221,33 @@ module.exports = {
       .setTimestamp();
 
     // Add one field per category that has at least one accessible command.
+    // Discord caps an embed field value at 1024 chars. A busy category (e.g.
+    // Game Database) can exceed that, and addFields then throws — which made
+    // /help fail for EVERYONE. Pack each category's lines into <=1024-char
+    // chunks and emit one field per chunk; continuation chunks use a
+    // zero-width-space name so they read as one continuous section.
+    const FIELD_VALUE_LIMIT = 1024;
+    const CONTINUATION_NAME = '\u200b'; // zero-width space (valid non-empty field name)
     for (const [category, cmds] of Object.entries(grouped)) {
       const meta = CATEGORY_META[category] ?? { label: category };
-      const lines = cmds.map(cmd => `**${cmd.usage}** — ${cmd.description}`).join('\n');
-      embed.addFields({ name: meta.label, value: lines, inline: false });
+      const lines = cmds.map(cmd => `**${cmd.usage}** — ${cmd.description}`);
+
+      const chunks = [];
+      let current = '';
+      for (const line of lines) {
+        const candidate = current ? `${current}\n${line}` : line;
+        if (candidate.length > FIELD_VALUE_LIMIT && current) {
+          chunks.push(current);
+          current = line;
+        } else {
+          current = candidate;
+        }
+      }
+      if (current) chunks.push(current);
+
+      chunks.forEach((value, i) => {
+        embed.addFields({ name: i === 0 ? meta.label : CONTINUATION_NAME, value, inline: false });
+      });
     }
 
     await interaction.reply({ embeds: [embed], ephemeral: true });
