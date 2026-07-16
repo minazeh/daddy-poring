@@ -70,7 +70,7 @@ const TIME_SLOT_LEAD_MINUTES = 30;       // earliest = now + 30 min, rounded up 
 const TIME_SLOT_MAX_OPTIONS = 25;        // Discord select-menu option cap
 
 // Channel where party/carry cards are posted (#party-finder).
-const PARTY_FINDER_CHANNEL_ID = '1519235164956266606';
+const PARTY_FINDER_CHANNEL_ID = '1527144922812121118';
 
 // Only holders of this role can click "I'll carry this".
 const CARRY_ROLE_ID = '1519235731648811179';
