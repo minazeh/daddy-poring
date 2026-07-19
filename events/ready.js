@@ -12,6 +12,7 @@ const activitySticky = require('../activitycampaign/sticky');
 const gvgDb = require('../gvg/db');
 const gvgScheduler = require('../gvg/scheduler');
 const gvgCapture = require('../gvg/capture');
+const gvgReminder = require('../gvg/reminder');
 const reactionRoleDb = require('../reactionrole/db');
 const partyfinderDb = require('../partyfinder/db');
 const partyfinderResume = require('../partyfinder/resume');
@@ -170,7 +171,14 @@ module.exports = {
       if (ok) {
         console.log('[ready] GvG attendance store ready (MongoDB).');
         await gvgCapture.resume(client);
-        await gvgScheduler.armAll(client, gvgCapture.startCapture);
+        // Reminder resume BEFORE armAll: re-posts stickies for in-window
+        // occurrences (and takes down any whose event passed during downtime),
+        // so armAll's immediate reminder-start re-fire is an idempotent no-op.
+        await gvgReminder.resume(client);
+        await gvgScheduler.armAll(client, gvgCapture.startCapture, {
+          onReminderStart: gvgReminder.onReminderStart,
+          onTakedown: gvgReminder.onTakedown,
+        });
       } else if (process.env.MONGODB_URI) {
         console.warn('[ready] GvG attendance disabled — could not connect to MongoDB (check Atlas Network Access / URI).');
       } else {

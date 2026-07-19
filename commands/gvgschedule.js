@@ -17,6 +17,7 @@
 const { SlashCommandBuilder } = require('discord.js');
 const db = require('../gvg/db');
 const scheduler = require('../gvg/scheduler');
+const reminder = require('../gvg/reminder');
 const {
   GODFATHERS_ROLE_ID,
   GVG_TZ_LABEL,
@@ -202,7 +203,20 @@ module.exports = {
         return;
       }
       scheduler.cancelSchedule(id);
-      await interaction.editReply(`🗑️ Removed GvG schedule: **${describeSchedule(removed)}** — its timer is cancelled.`);
+
+      // Delete-mid-window teardown (spec §5.5): if this schedule has an active
+      // Guild Event reminder, tear it down — delete the sticky, final-flush the
+      // in-memory RSVPs, and annotate the tally as removed. Graceful-degrade:
+      // never let a teardown error fail the removal the user already asked for.
+      let tornDown = 0;
+      try {
+        tornDown = await reminder.teardownForSchedule(interaction.client, id);
+      } catch (err) {
+        console.warn('[gvgschedule] Reminder teardown on remove failed (schedule still removed):', err?.message || err);
+      }
+
+      const reminderNote = tornDown > 0 ? ' Its active reminder was taken down too.' : '';
+      await interaction.editReply(`🗑️ Removed GvG schedule: **${describeSchedule(removed)}** — its timers are cancelled.${reminderNote}`);
       return;
     }
   },

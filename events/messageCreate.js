@@ -1,6 +1,7 @@
 const { Events } = require('discord.js');
 const db = require('../kudos/db');
 const activitySticky = require('../activitycampaign/sticky');
+const gvgReminder = require('../gvg/reminder');
 const { logEvent } = require('../auditlog/logger');
 const { COLORS } = require('../auditlog/constants');
 
@@ -47,6 +48,16 @@ module.exports = {
       activitySticky.onMessage(message);
     } catch (err) {
       console.warn('[activitycampaign] Sticky trigger failed (kudos unaffected):', err?.message || err);
+    }
+
+    // Guild Event reminder sticky bump — ADDITIVE, same contract as above.
+    // Cheap in-memory checks unless this is Channel A with an active reminder;
+    // repost work is debounced + fire-and-forget inside the module. A failure
+    // here must never take kudos (or the campaign sticky) down.
+    try {
+      gvgReminder.onMessage(message);
+    } catch (err) {
+      console.warn('[gvg/reminder] Sticky trigger failed (kudos unaffected):', err?.message || err);
     }
 
     if (typeof message.content !== 'string') return;

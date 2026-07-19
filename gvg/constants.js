@@ -16,6 +16,49 @@ const GODFATHERS_ROLE_ID = '1518076150692188200';
 const LOG_CHANNEL_ID = '1522579149758136403';
 
 // -------------------------------------------------------------------------
+// Guild Event Reminder (Phase 1) — a silent, self-bumping reminder sticky
+// that appears 2 h before each scheduled event in REMINDER_CHANNEL_ID
+// (Channel A) with Let's-go / Can't-make-it buttons, and is taken down at
+// event start. User-facing copy always says "Guild Event", never "GvG".
+// See docs/GUILD_EVENT_REMINDER_SPEC.md.
+// -------------------------------------------------------------------------
+
+// Channel A — the reminder sticky + RSVP buttons live here.
+const REMINDER_CHANNEL_ID = '1518082956466585731';
+
+// Channel B — the live tally (Phase 2). Declared now so the take-down /
+// delete-mid-window "annotate tally" hooks have the id available; Phase 1
+// never posts here.
+const TALLY_CHANNEL_ID = '1528279089629106196';
+
+// Lead time: the reminder sticky goes up this long before event start.
+const REMINDER_LEAD_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+// Debounce gap between sticky reposts (mirrors the activity-campaign sticky).
+const REMINDER_REPOST_COOLDOWN_MS = 30_000;
+
+// Phase 2 — batched RSVP sync + live-tally refresh cadence. A single
+// module-level setInterval flushes every DIRTY occurrence (in-memory RSVPs →
+// gvg_attendance_intent) and refreshes its Channel-B tally on this beat. A
+// burst of 400 taps inside one interval collapses into ONE bulkWrite. .unref()d
+// so it never keeps the process alive.
+const REMINDER_SYNC_INTERVAL_MS = 10_000; // 10 s
+
+// RSVP button customId namespace. Full id: `gvgrsvp:<yes|no>:<occurrenceKey>`
+// where occurrenceKey = `<scheduleId(24)>:<YYYYMMDD>` → total ~45 chars, well
+// under Discord's 100-char customId cap.
+const RSVP_ID_PREFIX = 'gvgrsvp';
+
+// RSVP button copy (user-facing — reword freely, code never parses these).
+const RSVP_YES_LABEL = "⚔️ Let's go!";
+const RSVP_NO_LABEL = "😔 Can't make it";
+
+// Ephemeral acks sent to the presser (the public sticky is never edited).
+const RSVP_ACK_YES = "You're in! ⚔️";
+const RSVP_ACK_NO = "Marked as can't-make-it — change it anytime.";
+const RSVP_ACK_ERR = "⚠️ Couldn't register that right now — please try again in a moment.";
+
+// -------------------------------------------------------------------------
 // GvG timezone. Schedule times are entered and displayed in this offset.
 // Edit this one line (and the label) to change the GvG timezone.
 // -------------------------------------------------------------------------
@@ -75,6 +118,17 @@ const EMBED_CHAR_SAFETY = 5600;
 module.exports = {
   GODFATHERS_ROLE_ID,
   LOG_CHANNEL_ID,
+  REMINDER_CHANNEL_ID,
+  TALLY_CHANNEL_ID,
+  REMINDER_LEAD_MS,
+  REMINDER_REPOST_COOLDOWN_MS,
+  REMINDER_SYNC_INTERVAL_MS,
+  RSVP_ID_PREFIX,
+  RSVP_YES_LABEL,
+  RSVP_NO_LABEL,
+  RSVP_ACK_YES,
+  RSVP_ACK_NO,
+  RSVP_ACK_ERR,
   GVG_TZ_OFFSET_HOURS,
   GVG_TZ_LABEL,
   DEFAULT_DURATION_MIN,

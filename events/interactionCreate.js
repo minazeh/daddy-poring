@@ -4,6 +4,7 @@ const officerapp = require('../officerapp/handlers');
 const partyfinder = require('../partyfinder/handlers');
 const quiz = require('../quiz/handlers');
 const activitycampaign = require('../activitycampaign/handlers');
+const gvgReminder = require('../gvg/reminder');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -60,6 +61,11 @@ module.exports = {
         // restart-safe, unique namespace, no collision with other routers.
         const campaignHandled = await activitycampaign.route(interaction);
         if (campaignHandled) return;
+
+        // Guild Event reminder RSVP buttons (gvgrsvp:<yes|no>:<occurrenceKey>).
+        // Unique namespace — no collision with the routers around it.
+        const gvgRsvpHandled = await gvgReminder.route(interaction);
+        if (gvgRsvpHandled) return;
 
         // Job-ad -> officer-application feature: jobad:modal, jobapply:<id>,
         // officerapp:modal:<id>, officerreview:daddy|mummy|reject:<userId>:<id>.

@@ -332,6 +332,70 @@ function embedCharCount(embedData) {
   return n;
 }
 
+// ---------------------------------------------------------------------------
+// Paginator primitives — the single source of Discord limit math, REUSED by
+// both the attendance log (this module) and the Phase-2 Guild Event tally
+// (gvg/reminder.js). Do NOT hand-roll new field/embed packing elsewhere; call
+// these so the caps in gvg/constants.js are enforced in exactly one place.
+// ---------------------------------------------------------------------------
+
+// Chunk a list of pre-rendered name lines into embed FIELDS, each value ≤
+// MAX_FIELD_VALUE_CHARS. The first chunk's field name is `header`; continuation
+// chunks use `contHeader`. An empty list yields a single field with `emptyText`.
+function chunkNamesIntoFields(header, contHeader, lines, emptyText = '_(none)_') {
+  const fields = [];
+  const hdr = String(header).slice(0, MAX_NAME_LINE_CHARS);
+  const cont = String(contHeader).slice(0, MAX_NAME_LINE_CHARS);
+  if (!lines.length) {
+    fields.push({ name: hdr, value: emptyText, inline: false });
+    return fields;
+  }
+  let chunk = [];
+  let len = 0;
+  let first = true;
+  const flush = () => {
+    fields.push({ name: first ? hdr : cont, value: chunk.join('\n'), inline: false });
+    first = false;
+    chunk = [];
+    len = 0;
+  };
+  for (const line of lines) {
+    // +1 for the joining newline. Never let a value exceed 1024.
+    if (chunk.length && len + line.length + 1 > MAX_FIELD_VALUE_CHARS) flush();
+    chunk.push(line);
+    len += line.length + 1;
+  }
+  if (chunk.length) flush();
+  return fields;
+}
+
+// Pack fields into content embeds respecting BOTH ≤25 fields AND the
+// safety-margined ≤6000 chars per embed; overflow opens a new embed. Field
+// values are assumed already ≤1024 (chunkNamesIntoFields guarantees it).
+function packFieldsIntoEmbeds(fields, { color = 0x5865F2 } = {}) {
+  const embeds = [];
+  let curFields = [];
+  let curChars = 0;
+  const flush = () => {
+    const e = new EmbedBuilder().setColor(color);
+    e.addFields(curFields);
+    embeds.push(e);
+    curFields = [];
+    curChars = 0;
+  };
+  for (const f of fields) {
+    const fChars = f.name.length + f.value.length;
+    if (curFields.length &&
+        (curFields.length >= MAX_FIELDS_PER_EMBED || curChars + fChars > EMBED_CHAR_SAFETY)) {
+      flush();
+    }
+    curFields.push(f);
+    curChars += fChars;
+  }
+  if (curFields.length) flush();
+  return embeds;
+}
+
 // Render ALL of a capture's members into embed fields — every name inline, no
 // truncation. Each VC's members are chunked into as many field values as
 // needed (each ≤ MAX_FIELD_VALUE_CHARS); the first chunk's field name carries
@@ -341,37 +405,11 @@ function buildMemberFields(result) {
   const fields = [];
   for (const vc of result) {
     const guildLabel = GUILD_LABELS[vc.guild] || vc.guild;
-    const header = `${vc.label} (${guildLabel}) — ${vc.count} present`.slice(0, MAX_NAME_LINE_CHARS);
-    const contHeader = `${vc.label} …(cont.)`.slice(0, MAX_NAME_LINE_CHARS);
-
-    if (!vc.members.length) {
-      fields.push({ name: header, value: '_(no one attended)_', inline: false });
-      continue;
-    }
-
+    const header = `${vc.label} (${guildLabel}) — ${vc.count} present`;
+    const contHeader = `${vc.label} …(cont.)`;
     const lines = vc.members.map(m =>
       `${m.flagged ? '⚠ ' : ''}${m.displayName}`.slice(0, MAX_NAME_LINE_CHARS));
-
-    let chunk = [];
-    let len = 0;
-    let first = true;
-    const flush = () => {
-      fields.push({
-        name: first ? header : contHeader,
-        value: chunk.join('\n'),
-        inline: false,
-      });
-      first = false;
-      chunk = [];
-      len = 0;
-    };
-    for (const line of lines) {
-      // +1 for the joining newline. Never let a value exceed 1024.
-      if (chunk.length && len + line.length + 1 > MAX_FIELD_VALUE_CHARS) flush();
-      chunk.push(line);
-      len += line.length + 1;
-    }
-    if (chunk.length) flush();
+    fields.push(...chunkNamesIntoFields(header, contHeader, lines, '_(no one attended)_'));
   }
   return fields;
 }
@@ -449,26 +487,7 @@ function buildLog(capture, result, rosterAvailable) {
   // Pack member fields into content embeds: ≤25 fields AND ≤6000 chars each
   // (safety-margined). Field values are already ≤1024 by construction.
   const memberFields = buildMemberFields(result);
-  const contentEmbeds = [];
-  let curFields = [];
-  let curChars = 0;
-  const flushEmbed = () => {
-    const e = new EmbedBuilder().setColor(0x5865F2);
-    e.addFields(curFields);
-    contentEmbeds.push(e);
-    curFields = [];
-    curChars = 0;
-  };
-  for (const f of memberFields) {
-    const fChars = f.name.length + f.value.length;
-    if (curFields.length &&
-        (curFields.length >= MAX_FIELDS_PER_EMBED || curChars + fChars > EMBED_CHAR_SAFETY)) {
-      flushEmbed();
-    }
-    curFields.push(f);
-    curChars += fChars;
-  }
-  if (curFields.length) flushEmbed();
+  const contentEmbeds = packFieldsIntoEmbeds(memberFields, { color: 0x5865F2 });
 
   const embeds = [summary, ...contentEmbeds];
 
@@ -591,5 +610,9 @@ module.exports = {
   compileResult,
   snapshotVcs,
   snapshotExpectedRoster,
+  // paginator primitives — reused by gvg/reminder.js (Phase 2 tally)
+  chunkNamesIntoFields,
+  packFieldsIntoEmbeds,
+  buildMemberFields,
   _activeCapturesForTests: activeCaptures,
 };

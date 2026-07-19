@@ -82,11 +82,49 @@ const DB_NAME = 'discordbot';
 const SCHEDULES_COLLECTION = 'gvg_schedules';
 const VCS_COLLECTION = 'gvg_voicechannels';
 const ATTENDANCE_COLLECTION = 'gvg_attendance';
+// Guild Event Reminder (Phase 1) sticky state — one doc per ACTIVE occurrence
+// (reminder window open), so the sticky + take-down survive a restart:
+//   {
+//     _id:             occurrenceKey,        — `<scheduleId>:<YYYYMMDD GMT+7>`
+//     occurrenceKey:   string,
+//     scheduleId:      string,               — source gvg_schedules _id
+//     label:           string,               — display label for the copy
+//     guild:           'daddy'|'mummy'|'both',
+//     eventAt:         Date,                  — event start (UTC), = take-down
+//     channelId:       string,               — Channel A (reminder + buttons)
+//     stickyMessageId: string|null,          — current sticky message id
+//     tallyMessageId:  string|null,          — Channel-B live-tally message id
+//                                              (Phase 2; survives restart so the
+//                                              tally is edited in place, never
+//                                              re-posted as a duplicate)
+//     active:          boolean,              — false once taken down/removed
+//     createdAt:       Date,
+//     updatedAt:       Date,
+//   }
+const REMINDERS_COLLECTION = 'gvg_reminders';
+// Guild Event Reminder (Phase 2) shared data contract — one doc per member per
+// occurrence, read by the web-app party builder (grey-out + deprioritize). The
+// bot WRITES it (batched bulkWrite); the web app READS it. Schema (spec §3):
+//   {
+//     _id:         ObjectId,
+//     occurrenceKey: string,   — `<scheduleId>:<YYYYMMDD GMT+7>`
+//     scheduleId:  string,     — source gvg_schedules _id
+//     guild:       'daddy'|'mummy', — the RESPONDER's roster affiliation
+//     userId:      string,
+//     displayName: string,     — roster snapshot at press time
+//     response:    'yes'|'no',
+//     eventAt:     Date,        — event start (UTC) for the web app's query
+//     updatedAt:   Date,
+//   }
+// Upsert key (occurrenceKey, userId) — a member changing their mind overwrites.
+const INTENT_COLLECTION = 'gvg_attendance_intent';
 
 let client = null;
 let schedulesCol = null;
 let vcsCol = null;
 let attendanceCol = null;
+let remindersCol = null;
+let intentCol = null;
 let connected = false;
 
 const uri = process.env.MONGODB_URI;
@@ -127,12 +165,24 @@ async function initSchema() {
     schedulesCol = db.collection(SCHEDULES_COLLECTION);
     vcsCol = db.collection(VCS_COLLECTION);
     attendanceCol = db.collection(ATTENDANCE_COLLECTION);
+    remindersCol = db.collection(REMINDERS_COLLECTION);
+    intentCol = db.collection(INTENT_COLLECTION);
     // channelId is the natural key for monitored VCs (one registration per
     // channel). status powers the restart-resume scan; startedAt the web-app
     // history views. All idempotent.
     await vcsCol.createIndex({ channelId: 1 }, { unique: true });
     await attendanceCol.createIndex({ status: 1 });
     await attendanceCol.createIndex({ startedAt: -1 });
+    // active powers the reminder resume scan on boot. _id (occurrenceKey) is
+    // unique by definition. Idempotent.
+    await remindersCol.createIndex({ active: 1 });
+    // gvg_attendance_intent (Phase 2 / web-app contract, spec §3):
+    //   - unique (occurrenceKey, userId): one doc per member per occurrence;
+    //     a re-press upserts in place.
+    //   - (guild, eventAt): the web app's "soonest upcoming occurrence of the
+    //     shown guild" query.
+    await intentCol.createIndex({ occurrenceKey: 1, userId: 1 }, { unique: true });
+    await intentCol.createIndex({ guild: 1, eventAt: 1 });
     connected = true;
     console.log('[gvg/db] Connected to MongoDB — GvG attendance store ready.');
     return true;
@@ -141,6 +191,8 @@ async function initSchema() {
     schedulesCol = null;
     vcsCol = null;
     attendanceCol = null;
+    remindersCol = null;
+    intentCol = null;
     console.warn('[gvg/db] MongoDB connect/index init failed — GvG attendance disabled:', err?.message || err);
     return false;
   }
@@ -320,6 +372,106 @@ async function completeCapture(captureId, { rosterAvailable, result, postedMessa
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Guild Event Reminders (Phase 1 sticky state). One doc per active occurrence,
+// keyed by occurrenceKey, so a reminder sticky + its take-down survive a
+// restart. All guarded on remindersCol so they degrade gracefully even if the
+// core store is up but this collection was never initialised (e.g. tests).
+// ---------------------------------------------------------------------------
+
+// Upsert the reminder doc for an occurrence (posted / reposted). active:true.
+async function upsertReminder({ occurrenceKey, scheduleId, label, guild, eventAt, channelId, stickyMessageId }) {
+  if (!isReady() || !remindersCol) return false;
+  const now = new Date();
+  await remindersCol.updateOne(
+    { _id: occurrenceKey },
+    {
+      $set: {
+        occurrenceKey, scheduleId, label, guild, eventAt, channelId,
+        stickyMessageId: stickyMessageId ?? null,
+        active: true,
+        updatedAt: now,
+      },
+      $setOnInsert: { createdAt: now },
+    },
+    { upsert: true },
+  );
+  return true;
+}
+
+// Record the current sticky message id for an occurrence (called on every
+// (re)post). No-op when not ready.
+async function setReminderStickyMessageId(occurrenceKey, stickyMessageId) {
+  if (!isReady() || !remindersCol) return false;
+  await remindersCol.updateOne(
+    { _id: occurrenceKey },
+    { $set: { stickyMessageId: stickyMessageId ?? null, updatedAt: new Date() } },
+  );
+  return true;
+}
+
+// Record the Channel-B live-tally message id for an occurrence (Phase 2). Set
+// once on the first flush that posts the tally; persisted so restarts re-attach
+// (edit in place) instead of posting a duplicate. No-op when not ready.
+async function setReminderTallyMessageId(occurrenceKey, tallyMessageId) {
+  if (!isReady() || !remindersCol) return false;
+  await remindersCol.updateOne(
+    { _id: occurrenceKey },
+    { $set: { tallyMessageId: tallyMessageId ?? null, updatedAt: new Date() } },
+  );
+  return true;
+}
+
+// One reminder doc by occurrenceKey (active OR inactive), or null. Used by the
+// tally refresh when the occurrence isn't in memory (e.g. annotate-removed on a
+// doc recovered after restart). No-op → null when not ready.
+async function getReminder(occurrenceKey) {
+  if (!isReady() || !remindersCol) return null;
+  return remindersCol.findOne({ _id: occurrenceKey });
+}
+
+// All active reminders (boot resume scan). Returns [] when not ready.
+async function getActiveReminders() {
+  if (!isReady() || !remindersCol) return [];
+  return remindersCol.find({ active: true }).toArray();
+}
+
+// Mark an occurrence's reminder inactive (taken down at event start or on
+// delete-mid-window). The doc is RETAINED (active:false) — never deleted.
+async function deactivateReminder(occurrenceKey) {
+  if (!isReady() || !remindersCol) return false;
+  await remindersCol.updateOne(
+    { _id: occurrenceKey },
+    { $set: { active: false, updatedAt: new Date() } },
+  );
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Guild Event attendance intent (Phase 2 — shared web-app contract, spec §3).
+// A single unordered bulkWrite of upserts (matches the web app / membersync
+// idiom) so a whole occurrence's dirty RSVPs coalesce into ONE round-trip.
+// ---------------------------------------------------------------------------
+
+// Bulk-upsert attendance-intent docs. Each doc must carry:
+//   { occurrenceKey, scheduleId, guild, userId, displayName, response,
+//     eventAt, updatedAt }.
+// Upsert key is (occurrenceKey, userId). No-op when not ready / nothing to
+// write. Never throws to the flush loop — the caller keeps buffering in memory
+// and retries next tick.
+async function bulkUpsertAttendanceIntent(docs) {
+  if (!isReady() || !intentCol || !docs.length) return false;
+  const ops = docs.map(doc => ({
+    updateOne: {
+      filter: { occurrenceKey: doc.occurrenceKey, userId: doc.userId },
+      update: { $set: doc },
+      upsert: true,
+    },
+  }));
+  await intentCol.bulkWrite(ops, { ordered: false });
+  return true;
+}
+
 // Optional clean shutdown.
 async function close() {
   if (client) {
@@ -330,10 +482,12 @@ async function close() {
 
 // Test hook — inject in-memory fake collections so schedule/VC/capture logic
 // can be exercised without touching Atlas. Never used at runtime.
-function _setCollectionsForTests(fakeSchedulesCol, fakeVcsCol, fakeAttendanceCol) {
+function _setCollectionsForTests(fakeSchedulesCol, fakeVcsCol, fakeAttendanceCol, fakeRemindersCol = null, fakeIntentCol = null) {
   schedulesCol = fakeSchedulesCol;
   vcsCol = fakeVcsCol;
   attendanceCol = fakeAttendanceCol;
+  remindersCol = fakeRemindersCol;
+  intentCol = fakeIntentCol;
   connected = Boolean(fakeSchedulesCol && fakeVcsCol && fakeAttendanceCol);
 }
 
@@ -356,6 +510,15 @@ module.exports = {
   setCaptureMemberLastSeen,
   getInProgressCaptures,
   completeCapture,
+  // guild event reminders (Phase 1)
+  upsertReminder,
+  setReminderStickyMessageId,
+  getActiveReminders,
+  deactivateReminder,
+  // guild event reminders (Phase 2 — tally state + intent contract)
+  setReminderTallyMessageId,
+  getReminder,
+  bulkUpsertAttendanceIntent,
   close,
   // exported for tests / simulation
   _setCollectionsForTests,
