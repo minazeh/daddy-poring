@@ -109,7 +109,12 @@ const REMINDERS_COLLECTION = 'gvg_reminders';
 //     _id:         ObjectId,
 //     occurrenceKey: string,   — `<scheduleId>:<YYYYMMDD GMT+7>`
 //     scheduleId:  string,     — source gvg_schedules _id
-//     guild:       'daddy'|'mummy', — the RESPONDER's roster affiliation
+//     guild:       'daddy'|'mummy'|'both'|null, — the RESPONDER's TRUE roster
+//                                affiliation (faithful, so a restart can
+//                                rehydrate the exact Daddy/Mummy/Unlisted split;
+//                                null = not on roster). The web app resolves the
+//                                event's guild from gvg_schedules, NOT this field
+//                                (spec §8), so 'both'/null here never affects it.
 //     userId:      string,
 //     displayName: string,     — roster snapshot at press time
 //     response:    'yes'|'no',
@@ -472,6 +477,16 @@ async function bulkUpsertAttendanceIntent(docs) {
   return true;
 }
 
+// All attendance-intent docs for one occurrence. Used on boot to rehydrate the
+// in-memory rsvps map so a restart mid-window doesn't render a zeroed tally.
+// The docs store the RESPONDER's true affiliation (guild:'daddy'|'mummy'|'both'|
+// null), so the rehydrated map reproduces the pre-restart tally exactly.
+// Returns [] when not ready.
+async function getAttendanceIntent(occurrenceKey) {
+  if (!isReady() || !intentCol) return [];
+  return intentCol.find({ occurrenceKey }).toArray();
+}
+
 // Optional clean shutdown.
 async function close() {
   if (client) {
@@ -519,6 +534,7 @@ module.exports = {
   setReminderTallyMessageId,
   getReminder,
   bulkUpsertAttendanceIntent,
+  getAttendanceIntent,
   close,
   // exported for tests / simulation
   _setCollectionsForTests,

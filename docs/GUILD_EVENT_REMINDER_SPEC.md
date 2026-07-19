@@ -46,7 +46,7 @@ New collection in the `discordbot` DB. One doc per member-per-occurrence:
 {
   occurrenceKey: string,   // `${scheduleId}:${eventDateISO}` — unique per event per week
   scheduleId:    string,   // source gvg_schedules _id
-  guild:         "daddy" | "mummy",  // the RESPONDER's roster affiliation (see §7)
+  guild:         "daddy" | "mummy" | "both" | null,  // the RESPONDER's TRUE roster affiliation (see §7)
   userId:        string,
   displayName:   string,   // snapshot for the tally / .txt (roster lookup at press time)
   response:      "yes" | "no",
@@ -55,7 +55,13 @@ New collection in the `discordbot` DB. One doc per member-per-occurrence:
 }
 ```
 
-- **Upsert key:** `(occurrenceKey, userId)` — a member changing their mind overwrites.
+- **Upsert key:** `(occurrenceKey, userId)` — a member changing their mind overwrites. Still **one
+  doc per member per occurrence**.
+- `guild` stores the responder's **TRUE affiliation faithfully** — `"daddy" | "mummy" | "both"`, or
+  `null` when the responder isn't on the roster. This makes the record **lossless** so a bot restart
+  can rehydrate the exact Daddy/Mummy/Unlisted split (see §6.3). The web app resolves an
+  occurrence's guild from **`gvg_schedules`** (§8), **not** from this field, so storing `"both"`/`null`
+  here does **not** affect the party builder's grey-out.
 - `occurrenceKey` embeds the event date, so **each week & each event is a fresh set** — last
   week's answers never bleed in, no cleanup job needed.
 
@@ -155,6 +161,22 @@ New module: **`gvg/reminder.js`** (+ constants as needed; may extend `gvg/consta
   Discord caps (1024/field, 25 fields, 6000/embed, 10 embeds/msg, 2000/content).
 - Tally state (message IDs per occurrence, in Channel B) persisted in Mongo so edits survive
   restarts (mirror the campaign's config-in-Mongo pattern).
+
+### 6.3 Restart rehydration (RSVP durability)
+- RSVPs live in an **in-memory** map only; a bot restart empties it. Because the intent record is
+  **faithful** (§3 — true guild incl. `both`/`null`, every responder written), it is the durable
+  source of truth for the accumulated counts.
+- **`resume()` on boot rehydrates `rsvps` from `gvg_attendance_intent`** for **every** active
+  reminder occurrence — reconstructing `occurrenceKey → userId → { response, guild, displayName }`
+  exactly as it was — **before** anything can flush or finalize:
+  - **still in window** → rehydrate, then re-post the sticky. The live tally and the eventual
+    event-start `finalFlush` render the true counts (not `0/0`). A post-restart button press **adds
+    to** the rehydrated set (the fresher in-memory value wins on a re-press).
+  - **event already ended during downtime** → rehydrate, then final-flush + finalized tally + take
+    down (no sticky re-post for an ended event) — so a post-restart finalize of an in-window-but-
+    now-ended occurrence still writes/renders the correct counts instead of zeroing them.
+- Without this, a Railway redeploy mid-window would let `finalFlush`'s forced `refreshTally`
+  overwrite the correct Channel-B tally with `0 going / 0 can't`.
 
 ---
 

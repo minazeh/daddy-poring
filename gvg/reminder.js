@@ -183,14 +183,16 @@ async function occMetaFor(occurrenceKey) {
 
 // ---------------------------------------------------------------------------
 // Batched intent flush — coalesce an occurrence's in-memory RSVPs into ONE
-// bulkWrite upsert. Writes only "on-roster" responders (guild resolved):
-//   - guild 'daddy'/'mummy' → stored as-is.
-//   - guild 'both'          → stored under 'daddy' (the §3 schema is a single
-//     guild + a unique (occurrenceKey,userId) key, so one doc per member; the
-//     in-memory tally still counts a 'both' member under BOTH sections).
-//   - guild null (roster down / not on roster) → OMITTED from the intent (the
-//     web-app party builder renders from the roster, so a non-roster responder
-//     has no pool member to grey; they still appear in the bot tally).
+// bulkWrite upsert. The durable record is FAITHFUL (lossless) so a restart can
+// rehydrate the exact Daddy/Mummy/Unlisted split — the guild is stored as the
+// responder's TRUE affiliation, one doc per member (unique (occurrenceKey,
+// userId) key):
+//   - guild 'daddy'/'mummy'/'both' → stored as-is (a 'both' member counts under
+//     BOTH sections when the tally is rebuilt; computeTallySections handles it).
+//   - guild null (roster down / not on roster) → stored as guild:null (Unlisted
+//     in the tally). Included so rehydration is lossless.
+// The web app resolves an occurrence's guild from gvg_schedules (spec §8), NOT
+// from this field, so storing 'both'/null here does NOT affect it.
 // Never throws. Does NOT drop memory (members can still change until start).
 // ---------------------------------------------------------------------------
 async function flushIntent(occurrenceKey) {
@@ -205,9 +207,11 @@ async function flushIntent(occurrenceKey) {
 
   const docs = [];
   for (const [userId, rec] of byUser) {
-    let g = rec.guild;
-    if (g === 'both') g = 'daddy';
-    if (g !== 'daddy' && g !== 'mummy') continue; // null → omitted (see header)
+    // Store the TRUE affiliation faithfully: 'daddy'|'mummy'|'both' as-is, any
+    // other value (incl. undefined) normalized to null. Lossless for rehydrate.
+    const g = (rec.guild === 'daddy' || rec.guild === 'mummy' || rec.guild === 'both')
+      ? rec.guild
+      : null;
     docs.push({
       occurrenceKey,
       scheduleId,
@@ -222,6 +226,37 @@ async function flushIntent(occurrenceKey) {
   if (!docs.length) return false;
   await db.bulkUpsertAttendanceIntent(docs);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Rehydrate the in-memory rsvps map for one occurrence from its durable intent
+// docs (boot recovery). RSVPs live ONLY in memory; a restart empties the map, so
+// without this a post-restart finalFlush / tally refresh would render 0/0 and
+// overwrite the correct tally. Reconstructs occurrenceKey → userId → {response,
+// guild, displayName} exactly as it was pre-restart (guild kept faithful, incl.
+// 'both' and null). A press already in memory (post-restart) is NOT clobbered —
+// the fresher in-memory value wins. Never throws. Returns the map size.
+// ---------------------------------------------------------------------------
+async function rehydrateRsvps(occurrenceKey) {
+  if (!db.isReady()) return 0;
+  let docs = [];
+  try {
+    docs = await db.getAttendanceIntent(occurrenceKey);
+  } catch (err) {
+    console.warn('[gvg/reminder] Rehydrate intent read failed for', occurrenceKey, '-', err?.message || err);
+    return 0;
+  }
+  if (!docs.length) return rsvps.get(occurrenceKey)?.size || 0;
+
+  let byUser = rsvps.get(occurrenceKey);
+  if (!byUser) { byUser = new Map(); rsvps.set(occurrenceKey, byUser); }
+  for (const d of docs) {
+    if (!d.userId) continue;
+    if (byUser.has(d.userId)) continue; // a post-restart press already recorded — keep it.
+    const g = (d.guild === 'daddy' || d.guild === 'mummy' || d.guild === 'both') ? d.guild : null;
+    byUser.set(d.userId, { response: d.response, guild: g, displayName: d.displayName });
+  }
+  return byUser.size;
 }
 
 // ---------------------------------------------------------------------------
@@ -779,12 +814,16 @@ async function route(interaction) {
 // resume(client) — boot recovery for active reminders (mirrors the campaign's
 // resume + gvg/capture's "window already over → finalize now"). For each active
 // Mongo doc:
-//   - event already started while the bot was down → take it down now
-//     (delete sticky + final flush + deactivate), so no stale sticky lingers.
-//   - still in window → rebuild in-memory state, delete the pre-restart sticky,
-//     and re-post a fresh one so it's visible again. onReminderStart then
-//     no-ops for these (already active), avoiding a double post when armAll
-//     immediately re-fires an in-window reminder-start timer.
+//   - event already started while the bot was down → rehydrate its RSVPs from
+//     the durable intent record, THEN take it down now (delete sticky + final
+//     flush + deactivate). Rehydrating first means the final flush/tally reflect
+//     the true accumulated counts instead of 0/0.
+//   - still in window → rebuild in-memory state, REHYDRATE the RSVP map from
+//     Mongo (RSVPs are memory-only; a restart empties them, which would zero the
+//     tally at event start), delete the pre-restart sticky, and re-post a fresh
+//     one so it's visible again. onReminderStart then no-ops for these (already
+//     active), avoiding a double post when armAll immediately re-fires an
+//     in-window reminder-start timer.
 // Never throws to the boot path.
 // ---------------------------------------------------------------------------
 async function resume(client) {
@@ -807,11 +846,15 @@ async function resume(client) {
     try {
       const eventAt = new Date(doc.eventAt);
       if (eventAt.getTime() <= Date.now()) {
-        // Window ended during downtime → final flush (intent + finalized tally)
-        // then take it down (best-effort cleanup).
+        // Window ended during downtime → rehydrate the accumulated RSVPs from
+        // the durable record FIRST (so the final flush + finalized tally render
+        // the true counts, not 0/0), then final flush + take it down. Do NOT
+        // re-post a sticky for an ended event — just clean up.
         await deleteMessageBestEffort(client, doc.channelId || REMINDER_CHANNEL_ID, doc.stickyMessageId);
+        await rehydrateRsvps(doc.occurrenceKey);
         try { await finalFlush(doc.occurrenceKey, client); } catch { /* degrade */ }
         await db.deactivateReminder(doc.occurrenceKey).catch(() => {});
+        rsvps.delete(doc.occurrenceKey); // occurrence is done — drop the rehydrated map
         console.log(`[gvg/reminder] Resume: "${doc.label}" (${doc.occurrenceKey}) already started → taken down.`);
         continue;
       }
@@ -834,6 +877,13 @@ async function resume(client) {
         pendingTimer: null,
       };
       active.set(occ.occurrenceKey, occ);
+      // Rehydrate accumulated RSVPs from the durable record BEFORE anything can
+      // flush — RSVPs are memory-only, so a restart empties them and the tally
+      // (and the eventual event-start finalFlush) would render 0/0 without this.
+      // Mark dirty so the next sync tick reconciles the live tally to the true
+      // rehydrated counts even if no one presses post-restart.
+      const rehydrated = await rehydrateRsvps(occ.occurrenceKey);
+      if (rehydrated > 0) dirty.add(occ.occurrenceKey);
       // Re-post fresh (delete the pre-restart sticky), like the campaign.
       await postSticky(client, occ, doc.stickyMessageId);
       restored += 1;
@@ -861,6 +911,7 @@ module.exports = {
   annotateTallyRemoved,
   refreshTally,
   flushIntent,
+  rehydrateRsvps,
   startSyncLoop,
   // exported for tests / simulation
   computeTallySections,
