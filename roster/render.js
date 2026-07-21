@@ -1,11 +1,18 @@
 // ---------------------------------------------------------------------------
 // Guild-roster IMAGE rendering for /guildroster (canvas / @napi-rs/canvas).
 //
-// ONE IMAGE PER SECTION (Conrad's choice): a separate PNG per raid group plus
-// each field's "Unassigned Parties", emitted in order — Main raids (by position)
-// → Main Unassigned → Sub raids → Sub Unassigned. The command sends them one by
-// one as separate messages. Each image = an in-image header band + that
-// section's party cards in a fixed 3-column grid.
+// TWO IMAGES PER RUN (Conrad's confirmed spec): one for Main Field, one for Sub
+// Field, in that order. Each field image POOLS every non-empty party in that
+// field into ONE FLAT GRID — no raid-group separators/headers inside the image.
+// Ordering within a field: raids in `position` order, each raid's parties in its
+// `partyIds` order, then that field's unassigned parties by `position`. Only
+// NON-empty parties are drawn.
+//
+// LAYOUT: landscape, width EXACTLY 1920px (hard constraint), MAX 2 ROWS.
+// Column count = ceil(nParties / 2) so parties fill at most 2 rows with as many
+// columns as needed. Card width fills the 1920 width across that column count
+// (respecting MARGIN + CARD_GAP). Height is content-driven (header band + up to
+// 2 row heights + margins), targeting roughly 1080 without forcing/distorting.
 //
 // Aesthetic mirrors the web app's dark-neon party board: dark indigo page,
 // indigo card accents, light text. A party MISSING a required class renders on
@@ -95,16 +102,17 @@ const MAX_BYTES = 8 * 1024 * 1024; // 8MB Discord attachment cap
 const MAX_HEIGHT = 12000;          // pathological-height guard (won't trigger on real data)
 
 // Layout constants.
+const WIDTH = 1920;                // HARD constraint — every image is exactly this wide.
+const MAX_ROWS = 2;                // parties fill at most 2 rows.
 const MARGIN = 20;
-const COLS = 3;                    // fixed 3-column grid throughout
-const TITLE_BAND_H = 64;           // top guild band
-const SECTION_H = 44;              // per-section header band
-const SECTION_HEADER_GAP = 12;     // gap between a section header and its grid
-const SECTION_GAP = 24;            // gap between sections
-const EMPTY_NOTE_H = 34;           // height reserved for an "(all parties empty)" note
-const OVERFLOW_NOTE_H = 44;        // height reserved for the overflow note
+const SECTION_IMG_HEADER_H = 52;   // per-image header band height.
+const EMPTY_NOTE_H = 34;           // height reserved for an "(no parties yet)" note.
 
-const CARD_W = 330;
+// Card metrics. Cards keep a natural IDEAL_CARD_W and left-align; they only
+// shrink-to-fill (down to MIN_CARD_W) when there are so many parties that more
+// than one full row's worth of columns is needed within the 2-row cap.
+const IDEAL_CARD_W = 360;          // natural card width (near the old fixed 330).
+const MIN_CARD_W = 180;            // legibility floor (names truncate below this).
 const CARD_GAP = 16;
 const CARD_PAD = 14;
 const TITLE_H = 26;
@@ -185,7 +193,7 @@ function truncToWidth(ctx, text, maxW) {
   return `${s}…`;
 }
 
-// Height of one party card.
+// Height of one party card. Width-independent (member count drives height).
 function cardHeight(party) {
   const memberCount = (party.memberIds || []).length;
   return CARD_PAD + TITLE_H + MISSING_H + CARD_PAD + memberCount * ROW_H;
@@ -210,12 +218,12 @@ function drawBand(ctx, y, w, h, title, fontSize, bandColor) {
   ctx.textBaseline = 'top';
 }
 
-// Draw a single party card at (x, y) with fixed width CARD_W and given height.
-function drawCard(ctx, x, y, h, party, gctx) {
+// Draw a single party card at (x, y) with EXPLICIT width `w` and given height `h`.
+function drawCard(ctx, x, y, w, h, party, gctx) {
   const missing = computeMissing(party, gctx);
   const isMissing = missing.length > 0;
 
-  roundRect(ctx, x, y, CARD_W, h, 12);
+  roundRect(ctx, x, y, w, h, 12);
   ctx.fillStyle = isMissing ? COL.missingBg : COL.cardBg;
   ctx.fill();
   ctx.lineWidth = isMissing ? 2 : 1;
@@ -223,7 +231,7 @@ function drawCard(ctx, x, y, h, party, gctx) {
   ctx.stroke();
 
   const innerX = x + CARD_PAD;
-  const innerW = CARD_W - CARD_PAD * 2;
+  const innerW = w - CARD_PAD * 2;
   let cy = y + CARD_PAD;
 
   // Title: party name + fill.
@@ -276,22 +284,39 @@ function drawCard(ctx, x, y, h, party, gctx) {
 }
 
 // ---------------------------------------------------------------------------
-// Section layout — pre-computes the 3-col grid rows for a section so the
-// measure pass and the draw pass agree on heights.
-//   { title, rows:[{cells:[{p,h}], h}], gridH, isEmpty }
+// Flat-field layout — pools ALL of a field's non-empty parties into a single
+// grid. "Max 2 rows" is a CAP, not a target: small counts stay a SINGLE row of
+// natural-width (IDEAL_CARD_W) cards, LEFT-ALIGNED, wrapping to a 2nd row only
+// when they exceed one row's worth of ideal columns. Only when >colsPerRow
+// columns are forced (many parties) do cards shrink-to-fill down to MIN_CARD_W.
+//   { rows:[{cells:[{p,h}], h}], gridH, cardW, cols, isEmpty }
+// The measure pass and the draw pass both consume this so they agree.
 // ---------------------------------------------------------------------------
-function layoutSection(title, parties) {
+function layoutSection(parties) {
   if (!parties.length) {
-    return { title, rows: [], gridH: EMPTY_NOTE_H, isEmpty: true };
+    return { rows: [], gridH: EMPTY_NOTE_H, cardW: WIDTH - MARGIN * 2, cols: 0, isEmpty: true };
   }
+
+  const n = parties.length;
+  const usable = WIDTH - MARGIN * 2;
+  // How many natural-width cards fit in one row.
+  const colsPerRow = Math.max(1, Math.floor((usable + CARD_GAP) / (IDEAL_CARD_W + CARD_GAP)));
+  const rowCount = n <= colsPerRow ? 1 : MAX_ROWS; // single row until it overflows, capped at 2.
+  const cols = Math.ceil(n / rowCount);
+  // Keep the natural width (left-aligned, leftover space is fine) until we need
+  // more columns than fit at IDEAL width — then shrink-to-fill within 1920.
+  const cardW = cols <= colsPerRow
+    ? IDEAL_CARD_W
+    : Math.max(MIN_CARD_W, (usable - (cols - 1) * CARD_GAP) / cols);
+
   const heights = parties.map(cardHeight);
   const rows = [];
-  for (let i = 0; i < parties.length; i += COLS) {
-    const slice = parties.slice(i, i + COLS).map((p, j) => ({ p, h: heights[i + j] }));
+  for (let i = 0; i < n; i += cols) {
+    const slice = parties.slice(i, i + cols).map((p, j) => ({ p, h: heights[i + j] }));
     rows.push({ cells: slice, h: Math.max(...slice.map(c => c.h)) });
   }
   const gridH = rows.reduce((sum, r) => sum + r.h, 0) + (rows.length - 1) * CARD_GAP;
-  return { title, rows, gridH, isEmpty: false };
+  return { rows, gridH, cardW, cols, isEmpty: false };
 }
 
 // Filename-safe slug from a title.
@@ -299,23 +324,20 @@ function slug(s) {
   return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'group';
 }
 
-// Per-section image header band height (standalone images get a roomier band).
-const SECTION_IMG_HEADER_H = 52;
-
 // ---------------------------------------------------------------------------
-// Render ONE section (raid group or "Unassigned Parties") to its own PNG Buffer.
+// Render ONE field (pooled flat grid) to a PNG Buffer at WIDTH × content-height.
 // `layout` comes from layoutSection(); `bandTitle` is drawn in the header band.
+// Empty field → a short WIDTH-wide empty-state image (never crashes).
 // ---------------------------------------------------------------------------
 function renderSectionImage(bandTitle, layout, gctx) {
-  const width = MARGIN * 2 + COLS * CARD_W + (COLS - 1) * CARD_GAP;
   const gridTop = SECTION_IMG_HEADER_H + MARGIN;
   const bodyH = layout.isEmpty ? EMPTY_NOTE_H : layout.gridH;
-  const height = gridTop + bodyH + MARGIN;
+  const height = Math.min(MAX_HEIGHT, gridTop + bodyH + MARGIN);
 
-  const canvas = createCanvas(width, height);
+  const canvas = createCanvas(WIDTH, height);
   const ctx = canvas.getContext('2d');
-  paintPage(ctx, width, height);
-  drawBand(ctx, 0, width, SECTION_IMG_HEADER_H, bandTitle, 20, COL.headerBand);
+  paintPage(ctx, WIDTH, height);
+  drawBand(ctx, 0, WIDTH, SECTION_IMG_HEADER_H, bandTitle, 22, COL.headerBand);
 
   let y = gridTop;
   if (layout.isEmpty) {
@@ -323,30 +345,50 @@ function renderSectionImage(bandTitle, layout, gctx) {
     ctx.font = fReg(15);
     ctx.textBaseline = 'top';
     ctx.textAlign = 'left';
-    ctx.fillText('(all parties empty)', MARGIN, y + 4);
+    ctx.fillText('(no parties yet)', MARGIN, y + 4);
   } else {
     for (let i = 0; i < layout.rows.length; i++) {
       const row = layout.rows[i];
       let x = MARGIN;
       for (const cell of row.cells) {
-        drawCard(ctx, x, y, cell.h, cell.p, gctx);
-        x += CARD_W + CARD_GAP;
+        drawCard(ctx, x, y, layout.cardW, cell.h, cell.p, gctx);
+        x += layout.cardW + CARD_GAP;
       }
       y += row.h;
       if (i < layout.rows.length - 1) y += CARD_GAP;
     }
   }
 
-  return canvas.toBuffer('image/png');
+  let buffer = canvas.toBuffer('image/png');
+
+  // 8MB attachment guard. A 1920-wide roster is very unlikely to exceed this,
+  // but if it does, degrade to a WIDTH-wide notice rather than post an oversized
+  // (rejected) attachment or crash.
+  if (buffer.length > MAX_BYTES) {
+    console.warn(`[roster/render] "${bandTitle}" exceeded ${MAX_BYTES} bytes (${buffer.length}) — degrading to notice.`);
+    const nh = gridTop + EMPTY_NOTE_H + MARGIN;
+    const c2 = createCanvas(WIDTH, nh);
+    const x2 = c2.getContext('2d');
+    paintPage(x2, WIDTH, nh);
+    drawBand(x2, 0, WIDTH, SECTION_IMG_HEADER_H, bandTitle, 22, COL.headerBand);
+    x2.fillStyle = COL.muted;
+    x2.font = fReg(15);
+    x2.textBaseline = 'top';
+    x2.textAlign = 'left';
+    x2.fillText('(too many parties to render in one image)', MARGIN, gridTop + 4);
+    buffer = c2.toBuffer('image/png');
+  }
+
+  return buffer;
 }
 
 // ---------------------------------------------------------------------------
-// Build an ORDERED array of per-section images for a guild:
-//   Main raids (by position) → Main Unassigned → Sub raids → Sub Unassigned.
-// Returns [{ field:'main'|'sub', title:<raidName|'Unassigned Parties'>,
-//            filename, buffer }, ...]. Empty array → empty-state text reply.
-// Raid sections are always emitted (even if all parties empty); unassigned
-// sections only when there is at least one non-empty unassigned party.
+// Build EXACTLY TWO images for a guild: [Main Field, Sub Field] in that order.
+// Each field pools every non-empty party into ONE flat grid:
+//   raids by position → each raid's parties in partyIds order → field unassigned
+//   parties by position. No raid-group headers inside the image.
+// Returns [{ field, title, filename, buffer }, { field, title, filename, buffer }].
+// Always length 2 (empty fields render an empty-state image).
 // ---------------------------------------------------------------------------
 function buildRaidImages(guild, data) {
   const gctx = buildContext(data);
@@ -359,33 +401,30 @@ function buildRaidImages(guild, data) {
     const fieldLabel = field === 'main' ? 'Main Field' : 'Sub Field';
     const raids = raidGroups.filter(r => r.field === field); // pre-sorted by position
     const assigned = new Set();
+    const pooled = [];
 
+    // Raid parties first, in raid position order, each raid in partyIds order.
     for (const raid of raids) {
-      const ids = raid.partyIds || [];
-      ids.forEach(id => assigned.add(id));
-      const nonEmpty = ids.map(id => partyMap.get(id)).filter(Boolean).filter(p => !isEmptyParty(p));
-      const layout = layoutSection('', nonEmpty);
-      out.push({
-        field,
-        title: raid.name,
-        filename: `raid-${field}-${slug(raid.name)}.png`,
-        buffer: renderSectionImage(`${guildLabel} · ${fieldLabel} · ${raid.name}`, layout, gctx),
-      });
+      for (const id of raid.partyIds || []) {
+        assigned.add(id);
+        const p = partyMap.get(id);
+        if (p && !isEmptyParty(p)) pooled.push(p);
+      }
     }
 
+    // Then this field's unassigned non-empty parties, by position.
     const unassigned = parties
       .filter(p => p.field === field && !assigned.has(p.partyId) && !isEmptyParty(p))
       .sort((a, b) => (a.position || 0) - (b.position || 0));
+    pooled.push(...unassigned);
 
-    if (unassigned.length) {
-      const layout = layoutSection('', unassigned);
-      out.push({
-        field,
-        title: 'Unassigned Parties',
-        filename: `raid-${field}-unassigned.png`,
-        buffer: renderSectionImage(`${guildLabel} · ${fieldLabel} · Unassigned Parties`, layout, gctx),
-      });
-    }
+    const layout = layoutSection(pooled);
+    out.push({
+      field,
+      title: fieldLabel,
+      filename: `roster-${guild}-${field}.png`,
+      buffer: renderSectionImage(`${guildLabel} · ${fieldLabel}`, layout, gctx),
+    });
   }
 
   return out;
@@ -408,4 +447,6 @@ module.exports = {
   DEFAULT_REQUIRED_CLASSES,
   DEFAULT_PARTY_SIZE,
   MAX_BYTES,
+  WIDTH,
+  MAX_ROWS,
 };
