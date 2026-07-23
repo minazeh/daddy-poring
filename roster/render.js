@@ -96,6 +96,9 @@ const COL = {
   text:        '#f1f5f9',
   muted:       '#94a3b8',
   warn:        '#fca5a5', // red-300 for the MISSING flag
+  leader:      '#fbbf24', // amber-400 — raid-leader crown, tag, highlighted name
+  leaderRowBg: 'rgba(251,191,36,0.14)', // subtle gold wash behind the leader row
+  leaderTagFg: '#1f1300', // dark text sitting on the gold "Leader" tag pill
 };
 
 const MAX_BYTES = 8 * 1024 * 1024; // 8MB Discord attachment cap
@@ -170,9 +173,50 @@ function buildContext(data) {
   };
 }
 
+// Validated set of raid-LEADER userIds. For each raid group carrying a
+// `leaderId`, the id is only honored if it's actually among the memberIds of one
+// of that raid group's parties (the web app enforces the same rule; this is a
+// defensive re-check so a stale leader — member moved/removed since it was set —
+// degrades gracefully to no crown). A member sits in at most one party, so a
+// leader id maps to exactly one row. Returns a Set<string> of userIds.
+function computeLeaderSet(raidGroups, partyMap) {
+  const set = new Set();
+  for (const rg of raidGroups || []) {
+    if (!rg || typeof rg.leaderId !== 'string' || !rg.leaderId) continue;
+    for (const pid of rg.partyIds || []) {
+      const p = partyMap.get(pid);
+      if (p && Array.isArray(p.memberIds) && p.memberIds.includes(rg.leaderId)) {
+        set.add(rg.leaderId);
+        break;
+      }
+    }
+  }
+  return set;
+}
+
+const EMPTY_SET = new Set();
+
 // ---------------------------------------------------------------------------
 // Canvas drawing helpers
 // ---------------------------------------------------------------------------
+// Fill a filled N-point star centered at (cx, cy) — the drawn "crown" marker for
+// a raid leader (canvas can't render emoji/glyphs, so it's a real path). Height
+// spans 2*outerR, so keep outerR small enough to fit inside a member ROW_H.
+function drawStar(ctx, cx, cy, spikes, outerR, innerR, color) {
+  let rot = -Math.PI / 2;
+  const step = Math.PI / spikes;
+  ctx.beginPath();
+  for (let i = 0; i < spikes; i++) {
+    ctx.lineTo(cx + Math.cos(rot) * outerR, cy + Math.sin(rot) * outerR);
+    rot += step;
+    ctx.lineTo(cx + Math.cos(rot) * innerR, cy + Math.sin(rot) * innerR);
+    rot += step;
+  }
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
 function roundRect(ctx, x, y, w, h, r) {
   const rr = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
@@ -234,16 +278,47 @@ function drawCard(ctx, x, y, w, h, party, gctx) {
   const innerW = w - CARD_PAD * 2;
   let cy = y + CARD_PAD;
 
-  // Title: party name + fill.
+  const leaderSet = gctx.leaderSet || EMPTY_SET;
+  // Does this party contain the (validated) leader of its raid group?
+  const partyHasLeader = (party.memberIds || []).some((id) => leaderSet.has(id));
+
+  // Title: party name + fill, plus a gold "Leader" tag pill when this card holds
+  // the raid leader. The pill is drawn AFTER the (truncated) title so the title
+  // never overruns it.
   const count = (party.memberIds || []).length;
-  ctx.fillStyle = COL.text;
-  ctx.font = fBold(16);
+  const titleStr = `${party.name || party.partyId}  (${count}/${gctx.partySize})`;
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
-  ctx.fillText(
-    truncToWidth(ctx, `${party.name || party.partyId}  (${count}/${gctx.partySize})`, innerW),
-    innerX, cy,
-  );
+
+  if (partyHasLeader) {
+    const TAG = 'Leader';
+    const TAG_PAD_X = 6;
+    const TAG_H = 17;
+    ctx.font = fBold(11);
+    const tagTextW = ctx.measureText(TAG).width;
+    const pillW = tagTextW + TAG_PAD_X * 2;
+    const gap = 8;
+    // Reserve room for the pill; truncate the title to what's left.
+    ctx.font = fBold(16);
+    const titleMaxW = Math.max(20, innerW - pillW - gap);
+    const drawn = truncToWidth(ctx, titleStr, titleMaxW);
+    ctx.fillStyle = COL.text;
+    ctx.fillText(drawn, innerX, cy);
+    // Gold pill immediately after the drawn title.
+    const pillX = innerX + ctx.measureText(drawn).width + gap;
+    roundRect(ctx, pillX, cy, pillW, TAG_H, 4);
+    ctx.fillStyle = COL.leader;
+    ctx.fill();
+    ctx.fillStyle = COL.leaderTagFg;
+    ctx.font = fBold(11);
+    ctx.textBaseline = 'middle';
+    ctx.fillText(TAG, pillX + TAG_PAD_X, cy + Math.round(TAG_H / 2) + 1);
+    ctx.textBaseline = 'top';
+  } else {
+    ctx.fillStyle = COL.text;
+    ctx.font = fBold(16);
+    ctx.fillText(truncToWidth(ctx, titleStr, innerW), innerX, cy);
+  }
   cy += TITLE_H;
 
   // Missing flag (or OK note).
@@ -261,23 +336,43 @@ function drawCard(ctx, x, y, w, h, party, gctx) {
   for (const id of party.memberIds || []) {
     const row = memberRow(id, gctx);
     const badge = ROLE_BADGE[row.role] || ROLE_BADGE.dps;
+    const isLeader = leaderSet.has(id);
 
-    // Drawn role badge.
+    // Leader row highlight (drawn first, behind everything). Height-neutral.
+    if (isLeader) {
+      roundRect(ctx, innerX - 4, cy, innerW + 8, ROW_H - 2, 4);
+      ctx.fillStyle = COL.leaderRowBg;
+      ctx.fill();
+    }
+
+    // Drawn role badge (with a gold ring around it for the leader).
     roundRect(ctx, innerX, cy + 2, BADGE, BADGE, 4);
     ctx.fillStyle = badge.bg;
     ctx.fill();
+    if (isLeader) {
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = COL.leader;
+      roundRect(ctx, innerX - 1, cy + 1, BADGE + 2, BADGE + 2, 5);
+      ctx.stroke();
+    }
     ctx.fillStyle = '#ffffff';
     ctx.font = fBold(11);
     ctx.textAlign = 'center';
     ctx.fillText(badge.letter, innerX + BADGE / 2, cy + 4);
     ctx.textAlign = 'left';
 
-    // Name + class.
+    // Name + class. Leader rows render the name in gold and reserve room on the
+    // right for a crown star marker.
     const textX = innerX + BADGE + 8;
-    const textMaxW = innerW - BADGE - 8;
+    const textMaxW = innerW - BADGE - 8 - (isLeader ? 16 : 0);
     ctx.font = fReg(13);
-    ctx.fillStyle = COL.text;
+    ctx.fillStyle = isLeader ? COL.leader : COL.text;
     ctx.fillText(truncToWidth(ctx, `${row.label}  (${row.sub})`, textMaxW), textX, cy + 3);
+
+    // Crown marker (gold star) at the right edge of the leader's row.
+    if (isLeader) {
+      drawStar(ctx, innerX + innerW - 7, cy + Math.round(ROW_H / 2) - 1, 5, 6, 2.6, COL.leader);
+    }
 
     cy += ROW_H;
   }
@@ -394,6 +489,10 @@ function buildRaidImages(guild, data) {
   const gctx = buildContext(data);
   const { parties = [], raidGroups = [] } = data;
   const partyMap = new Map(parties.map(p => [p.partyId, p]));
+  // Validated raid-leader userIds (leader must be a member of one of its raid's
+  // parties). Global across the guild — a userId sits in at most one party, so a
+  // leader maps to exactly one member row / one party card.
+  gctx.leaderSet = computeLeaderSet(raidGroups, partyMap);
   const guildLabel = guild === 'mummy' ? 'Mummy' : 'Daddy';
   const out = [];
 
@@ -438,6 +537,7 @@ module.exports = {
   // pure helpers (tests / sim)
   classToRole,
   computeMissing,
+  computeLeaderSet,
   memberRow,
   isEmptyParty,
   cardHeight,

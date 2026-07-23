@@ -8,7 +8,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
-  buildRaidImages, layoutSection, isEmptyParty, WIDTH, MAX_ROWS, MAX_BYTES,
+  buildRaidImages, layoutSection, isEmptyParty, computeLeaderSet,
+  WIDTH, MAX_ROWS, MAX_BYTES,
 } = require('../roster/render');
 
 const OUT_DIR = path.join(os.tmpdir(), 'guildroster-sim');
@@ -152,6 +153,57 @@ const gctx = buildContext({ members, settings });
 const bravo = parties.find(p => p.partyId === 'daddy-main-2');
 assert(computeMissing(bravo, gctx).includes('Priest'), 'Bravo flagged MISSING: Priest (rose treatment)');
 assert(!isEmptyParty(bravo), 'Bravo is non-empty');
+
+console.log('\n[6] raid leader — crown + "Leader" title tag (valid / invalid / none)');
+// Dedicated CLEAN dataset: each member sits in exactly ONE party (as the web
+// builder enforces), so a leader crowns exactly one row / one card — unlike the
+// stress data above, which deliberately reuses a few ids across many parties.
+const LMEM = [
+  member('L1', 'Captain',  'Knight'), // leader (tank)
+  member('L2', 'Rosaria',  'Priest'),
+  member('L3', 'Fenwick',  'Wizard'),
+  member('L4', 'Brother',  'Priest'),
+  member('L5', 'Gustavo',  'Wizard'),
+];
+const lAlpha = party('daddy-main-1', 'main', 'Alpha', 1, ['L1', 'L2', 'L3']);
+const lBravo = party('daddy-main-2', 'main', 'Bravo', 2, ['L4', 'L5']);
+const lPartyMap = new Map([lAlpha, lBravo].map(p => [p.partyId, p]));
+const lRaid = {
+  raidGroupId: 'rg-lead', type: 'daddy', field: 'main', name: 'Leader Raid',
+  partyIds: ['daddy-main-1', 'daddy-main-2'], position: 1,
+};
+
+// (a) VALID leader (L1, in Alpha) → present in the leader set, size 1.
+const validSet = computeLeaderSet([{ ...lRaid, leaderId: 'L1' }], lPartyMap);
+assert(validSet.has('L1') && validSet.size === 1, 'valid leader L1 (in Alpha) → set {L1}');
+
+// (b) INVALID leader (id not in any of the raid's parties) → degrades to none.
+assert(computeLeaderSet([{ ...lRaid, leaderId: 'nobody' }], lPartyMap).size === 0,
+  'invalid leader (not in any party) → empty set (no crown, graceful)');
+
+// (c) NO leaderId → empty set.
+assert(computeLeaderSet([lRaid], lPartyMap).size === 0, 'raid with no leaderId → empty set');
+
+// (d) Render WITH a valid leader — image still exactly 1920 wide, < 8MB; the
+// crown star + gold "Leader" tag pill + gold name draw on Alpha (L1) only.
+const leaderImgs = buildRaidImages('daddy', {
+  members: LMEM, parties: [lAlpha, lBravo],
+  raidGroups: [{ ...lRaid, leaderId: 'L1' }], settings,
+});
+assert(leaderImgs.length === 2, 'leader render still returns 2 images');
+const mainWithLeader = leaderImgs[0];
+const szL = pngSize(mainWithLeader.buffer);
+assert(szL.width === WIDTH, `leader main image width === 1920 (got ${szL.width})`);
+assert(mainWithLeader.buffer.length < MAX_BYTES, `leader main image bytes < 8MB (got ${mainWithLeader.buffer.length})`);
+fs.writeFileSync(path.join(OUT_DIR, 'leader-main.png'), mainWithLeader.buffer);
+console.log(`      -> leader-main.png  (${szL.width}x${szL.height}, ${(mainWithLeader.buffer.length / 1024).toFixed(1)} KB) — eyeball: crown + Leader tag on Alpha/Captain ONLY`);
+
+// (e) Row height must NOT change because of the crown (height is member-driven).
+const noLeaderImgs = buildRaidImages('daddy', {
+  members: LMEM, parties: [lAlpha, lBravo], raidGroups: [lRaid], settings,
+});
+const szN = pngSize(noLeaderImgs[0].buffer);
+assert(szL.height === szN.height, `leader image height unchanged vs no-leader (crown is height-neutral: ${szL.height} === ${szN.height})`);
 
 console.log(`\n${failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)'} — samples in ${OUT_DIR}`);
 process.exit(failures === 0 ? 0 : 1);
