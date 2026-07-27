@@ -6,7 +6,6 @@ const { Events, EmbedBuilder } = require('discord.js');
 const WELCOME_CHANNEL_ID             = '1518655237815144538'; // #welcome (destination)
 const RULES_CHANNEL_ID               = '1518072757928067194'; // #rules
 const APPLICATION_INFO_CHANNEL_ID    = '1518226579657064577'; // #application-info
-const ATTENTION_APPLICANTS_CHANNEL_ID = '1518609010562044075'; // #attention-applicants (Valor CBT)
 
 module.exports = {
   name: Events.GuildMemberAdd,
@@ -42,8 +41,7 @@ module.exports = {
         `2. Change your server nickname to your IGN.\n` +
         `3. Fill out your application in <#${APPLICATION_INFO_CHANNEL_ID}>\n` +
         `4. Wait for leadership to approve your application.\n\n` +
-        `Thank you~\n\n` +
-        `If you are from Valor CBT, please fill out the form in <#${ATTENTION_APPLICANTS_CHANNEL_ID}>.`
+        `Thank you~`
       )
       .setFooter({
         text: member.guild.name,
