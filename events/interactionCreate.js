@@ -5,6 +5,7 @@ const partyfinder = require('../partyfinder/handlers');
 const quiz = require('../quiz/handlers');
 const activitycampaign = require('../activitycampaign/handlers');
 const gvgReminder = require('../gvg/reminder');
+const monsterquiz = require('../monsterquiz/engine');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -66,6 +67,12 @@ module.exports = {
         // Unique namespace — no collision with the routers around it.
         const gvgRsvpHandled = await gvgReminder.route(interaction);
         if (gvgRsvpHandled) return;
+
+        // Monster Quiz: the signup Join button (monsterquiz:join). Unique
+        // namespace — no collision with the routers around it. Acks with
+        // deferUpdate() (silent — posts no message).
+        const monsterQuizHandled = await monsterquiz.route(interaction);
+        if (monsterQuizHandled) return;
 
         // Job-ad -> officer-application feature: jobad:modal, jobapply:<id>,
         // officerapp:modal:<id>, officerreview:daddy|mummy|reject:<userId>:<id>.

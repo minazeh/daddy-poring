@@ -111,6 +111,13 @@ const COMMANDS = [
     access: 'everyone',
   },
   {
+    name: 'monsterquiz',
+    usage: '/monsterquiz [questions]',
+    description: 'Starts an anagram quiz — unscramble monster, item, and card names from the game database. Tap Join to play; first correct answer each round scores.',
+    category: 'Community',
+    access: 'everyone',
+  },
+  {
     name: 'monster',
     usage: '/monster <name>',
     description: 'Looks up a monster — stats, element, race, and drop rates. Data from roworlddb.com.',

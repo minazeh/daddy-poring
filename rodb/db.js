@@ -252,6 +252,25 @@ async function getMonsterDrops(monsterId) {
   return monster ? { drops: monster.drops || [], mvpDrops: monster.mvpDrops || [] } : null;
 }
 
+// ---------------------------------------------------------------------------
+// Random sample — read-only $sample aggregate. Used by the Monster Quiz to draw
+// question candidates. Returns [] when not ready or on any error (graceful
+// degrade — never throws). `n` is clamped to a sane positive integer.
+// ---------------------------------------------------------------------------
+async function sampleDocs(collName, n, filter = null) {
+  if (!isReady()) return [];
+  const size = Math.max(1, Math.floor(Number(n) || 1));
+  try {
+    const pipeline = [];
+    if (filter) pipeline.push({ $match: filter });
+    pipeline.push({ $sample: { size } });
+    return await db.collection(collName).aggregate(pipeline).toArray();
+  } catch (err) {
+    console.warn(`[rodb/db] sampleDocs failed on ${collName}:`, err?.message || err);
+    return [];
+  }
+}
+
 // Snapshot provenance doc ({assetVersion, importedAt, counts}) or null.
 async function getMeta() {
   if (!isReady()) return null;
@@ -276,6 +295,7 @@ module.exports = {
   initSchema,
   searchByName,
   getById,
+  sampleDocs,
   searchMonsters,
   searchEquipment,
   searchCards,

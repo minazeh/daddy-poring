@@ -2,6 +2,7 @@ const { Events } = require('discord.js');
 const db = require('../kudos/db');
 const activitySticky = require('../activitycampaign/sticky');
 const gvgReminder = require('../gvg/reminder');
+const quizEngine = require('../monsterquiz/engine');
 const { logEvent } = require('../auditlog/logger');
 const { COLORS } = require('../auditlog/constants');
 
@@ -58,6 +59,15 @@ module.exports = {
       gvgReminder.onMessage(message);
     } catch (err) {
       console.warn('[gvg/reminder] Sticky trigger failed (kudos unaffected):', err?.message || err);
+    }
+
+    // Monster Quiz answer detection — ADDITIVE, same fire-and-forget contract.
+    // Only counts messages from joined participants during an active round;
+    // never throws into (or blocks) the kudos flow below.
+    try {
+      quizEngine.onMessage(message);
+    } catch (err) {
+      console.warn('[monsterquiz] onMessage failed (kudos unaffected):', err?.message || err);
     }
 
     if (typeof message.content !== 'string') return;
