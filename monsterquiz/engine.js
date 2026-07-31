@@ -10,8 +10,10 @@
 // up to 60 s each) → final tally. See PROJECT SPEC / FEATURE-LOG for the exact
 // timeout / ignored-round / race-guard rules implemented below.
 //
-// NO ephemeral replies anywhere: every slash reply is public; the Join button
-// acks with deferUpdate() (a silent acknowledgement that posts no message).
+// No ephemeral in game flow: every reply the engine posts is public; the Join
+// button + category select ack with deferUpdate() (silent, no message). The SOLE
+// ephemeral in this feature is the wrong-channel command gate in
+// commands/roquiz.js — a command guard, not game flow.
 //
 // Timings are injectable per-game (startGame opts) so the simulation can drive
 // rounds in milliseconds. NO database writes — endGame calls an onGameEnd hook
@@ -31,6 +33,8 @@ const {
   SIGNUP_MS,
   ROUND_MS,
   MAX_CONSECUTIVE_IGNORED,
+  NEXT_QUESTION_SECONDS,
+  COUNTDOWN_TICK_MS,
   JOIN_CUSTOM_ID,
   SELECT_CUSTOM_ID,
   CATEGORIES,
@@ -73,7 +77,7 @@ function categoryRow() {
 
 function buildChooseContent(game) {
   return [
-    '🧩 **Monster Quiz!**',
+    '🧩 **RO Quiz!**',
     `Pick a category below to start a **${game.requested}-round** quiz. Only <@${game.initiatorId}> (who started it) can choose.`,
     '',
     Object.values(CATEGORY_REGISTRY)
@@ -93,7 +97,7 @@ function buildSignupContent(game) {
   const secs = Math.round(game.signupMs / 1000);
   const cat = CATEGORY_REGISTRY[game.category] || {};
   const emoji = cat.emoji || '🧩';
-  const label = cat.label || 'Monster Quiz';
+  const label = cat.label || 'RO Quiz';
   const n = game.requested;
   const plural = n === 1 ? '' : 's';
 
@@ -107,7 +111,7 @@ function buildSignupContent(game) {
   }
 
   return [
-    `${emoji} **Monster Quiz — ${label}!**`,
+    `${emoji} **RO Quiz — ${label}!**`,
     blurb,
     `Tap **Join** in the next **${secs}s** to play. First to answer correctly each round scores a point.`,
     '',
@@ -122,6 +126,17 @@ function revealAnswer(question) {
     return Array.isArray(question.answers) ? question.answers[0] : '';
   }
   return question.answer;
+}
+
+// answerReveal — the bolded answer fragment for the win/timeout messages. Hoppy
+// (truefalse) appends the correct LETTER for this round's shuffle, e.g.
+// "**True** (B)"; other modes are just the bolded answer.
+function answerReveal(round) {
+  const q = round.question;
+  if (q.mode === 'truefalse' && round.correctLetter) {
+    return `**${revealAnswer(q)}** (${round.correctLetter})`;
+  }
+  return `**${revealAnswer(q)}**`;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +160,8 @@ async function buildQuestionSet(n, sampleFn, rng) {
 //   questions  clamped question count (the command clamps; we trust it)
 //   signupMs, roundMs   timing overrides (default constants)
 //   chooseMs   category-select window override (default = signupMs)
+//   nextQuestionSeconds  inter-question countdown length (default 5; 0 = skip)
+//   tickMs     countdown tick interval (default 1000)
 //   sampleFn(collectionKey, count) → docs[]   (default rodb.sampleDocs)
 //   rng        () → [0,1) (default Math.random)
 //   onGameEnd(summary)  end-of-game hook (default no-op — DB-save seam)
@@ -190,10 +207,14 @@ async function startGame(interaction, opts = {}) {
     signupMs,
     roundMs: opts.roundMs != null ? opts.roundMs : ROUND_MS,
     chooseMs: opts.chooseMs != null ? opts.chooseMs : signupMs,
+    // Inter-question countdown (0 = skip; sim/legacy paths pass 0).
+    nextQuestionSeconds: opts.nextQuestionSeconds != null ? opts.nextQuestionSeconds : NEXT_QUESTION_SECONDS,
+    tickMs: opts.tickMs != null ? opts.tickMs : COUNTDOWN_TICK_MS,
     rng,
     onGameEnd: typeof opts.onGameEnd === 'function' ? opts.onGameEnd : () => {},
     chooseTimer: null,
     signupTimer: null,
+    countdownTimer: null,
     signupMessage: null,
   };
   games.set(channelId, game);
@@ -232,7 +253,7 @@ async function endChoosing(game) {
   try {
     if (game.signupMessage) {
       await game.signupMessage.edit({
-        content: 'Monster Quiz — no category chosen — quiz cancelled.',
+        content: 'RO Quiz — no category chosen — quiz cancelled.',
         components: [],
         allowedMentions: { parse: [] },
       });
@@ -387,7 +408,7 @@ async function endSignup(game) {
     try {
       if (game.signupMessage) {
         await game.signupMessage.edit({
-          content: 'Monster Quiz — No one joined — quiz cancelled.',
+          content: 'RO Quiz — No one joined — quiz cancelled.',
           components: [],
           allowedMentions: { parse: [] },
         });
@@ -402,14 +423,14 @@ async function endSignup(game) {
   for (const userId of game.participants.keys()) game.scores.set(userId, 0);
 
   const startLines = [
-    `🎮 **Monster Quiz starting!** ${game.participants.size} player${game.participants.size === 1 ? '' : 's'} · ${game.questions.length} round${game.questions.length === 1 ? '' : 's'}.`,
+    `🎮 **RO Quiz starting!** ${game.participants.size} player${game.participants.size === 1 ? '' : 's'} · ${game.questions.length} round${game.questions.length === 1 ? '' : 's'}.`,
   ];
   if (game.shortfall) {
     const noun = game.mode === 'jumble' ? 'fair name' : 'question';
     startLines.push(`_(Only ${game.questions.length} ${noun}${game.questions.length === 1 ? '' : 's'} available right now — running with what we have.)_`);
   }
   if (game.mode === 'truefalse') {
-    startLines.push('Answer **True** or **False** in chat. First correct answer wins the round.');
+    startLines.push('Answer each question by typing the **LETTER** (A–D) in chat. First correct answer wins the round.');
   } else if (game.mode === 'trivia') {
     startLines.push('Type your answer in chat. First correct answer wins the round.');
   } else {
@@ -440,12 +461,20 @@ async function startRound(game) {
   const header = `**Round ${game.roundIndex + 1}/${game.questions.length}**`;
   let content;
   if (q.mode === 'truefalse') {
+    // Hoppy = lettered multiple choice (anti-spam). Build 4 shuffled A–D options
+    // (correct True/False + 2 misspelled decoys) per round; the correct LETTER
+    // depends on this round's shuffle, so it lives on the round.
+    const { choices, correctLetter } = logic.buildTrueFalseChoices(q.answer, game.rng || Math.random);
+    round.choices = choices;
+    round.correctLetter = correctLetter;
+    const optionLines = choices.map((c) => `  ${c.letter}) ${c.text}`);
     content = [
       `${header} — True or False?`,
       '```',
       q.question,
+      ...optionLines,
       '```',
-      'Answer **True** or **False**.',
+      'Type the **LETTER** (A–D).',
     ].join('\n');
   } else if (q.mode === 'trivia') {
     content = [
@@ -491,7 +520,7 @@ async function settleCorrect(game, round, userId) {
 
   await safeSend(
     game,
-    `✅ <@${userId}> got it — it was **${revealAnswer(round.question)}**! (+1)`,
+    `✅ <@${userId}> got it — it was ${answerReveal(round)}! (+1)`,
     { users: [userId] },
   );
   await advance(game);
@@ -508,7 +537,7 @@ async function settleTimeout(game, round) {
   round.resolved = true;
   round.timer = null;
 
-  await safeSend(game, `⏱️ Time's up — it was **${revealAnswer(round.question)}**.`);
+  await safeSend(game, `⏱️ Time's up — it was ${answerReveal(round)}.`);
 
   if (round.hadActivity) {
     game.consecutiveIgnored = 0;
@@ -525,7 +554,10 @@ async function settleTimeout(game, round) {
 }
 
 // ---------------------------------------------------------------------------
-// advance — move to the next round, or end after the last one.
+// advance — move to the next round, or end after the last one. BETWEEN questions
+// (rounds 2..N) a live countdown runs first; round 1 starts immediately and the
+// final tally (past the last round) posts with no countdown. The countdown is
+// skipped when nextQuestionSeconds === 0 (sim/legacy immediate path).
 // ---------------------------------------------------------------------------
 async function advance(game) {
   if (game.status !== 'playing') return;
@@ -534,7 +566,56 @@ async function advance(game) {
     await endGame(game);
     return;
   }
-  await startRound(game);
+  if (game.roundIndex > 0 && game.nextQuestionSeconds > 0) {
+    // Between questions: count down, then post the next round.
+    await runCountdown(game, () => startRound(game));
+    return;
+  }
+  await startRound(game); // round 1 (or countdown disabled) → immediate.
+}
+
+// ---------------------------------------------------------------------------
+// runCountdown — post ONE countdown message and tick it down each second, then
+// best-effort delete it and call onDone() (which posts the next round). Driven
+// by a single self-rescheduling timer stored on game.countdownTimer so cleanup()
+// can cancel it. Race-safe: bails whenever the game is no longer 'playing' (it
+// ended mid-countdown). Never throws into the flow.
+// ---------------------------------------------------------------------------
+function countdownText(n) {
+  return `⏳ Next question in: **${n}** second${n === 1 ? '' : 's'}`;
+}
+
+async function runCountdown(game, onDone) {
+  let remaining = game.nextQuestionSeconds;
+  const msg = await safeSend(game, countdownText(remaining));
+  if (game.status !== 'playing') return; // ended while posting — bail.
+
+  const tick = async () => {
+    game.countdownTimer = null;
+    if (game.status !== 'playing') return; // ended mid-countdown — bail.
+    remaining -= 1;
+
+    if (remaining >= 1) {
+      if (msg && typeof msg.edit === 'function') {
+        try { await msg.edit({ content: countdownText(remaining), allowedMentions: { parse: [] } }); } catch { /* best-effort */ }
+      }
+      if (game.status !== 'playing') return; // ended during the edit — bail.
+      game.countdownTimer = setTimeout(() => { void tick(); }, game.tickMs);
+      if (typeof game.countdownTimer.unref === 'function') game.countdownTimer.unref();
+      return;
+    }
+
+    // remaining hit 0 → done. Best-effort delete the countdown message (leave it
+    // if delete perms fail — never throw), then start the next round.
+    if (msg && typeof msg.delete === 'function') {
+      try { await msg.delete(); } catch { /* leave the message — best-effort */ }
+    }
+    if (game.status !== 'playing') return; // ended during the delete — bail.
+    await onDone();
+  };
+
+  game.countdownTimer = setTimeout(() => { void tick(); }, game.tickMs);
+  if (typeof game.countdownTimer.unref === 'function') game.countdownTimer.unref();
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +655,7 @@ async function endGame(game) {
 function cleanup(game) {
   if (game.chooseTimer) { clearTimeout(game.chooseTimer); game.chooseTimer = null; }
   if (game.signupTimer) { clearTimeout(game.signupTimer); game.signupTimer = null; }
+  if (game.countdownTimer) { clearTimeout(game.countdownTimer); game.countdownTimer = null; }
   if (game.currentRound?.timer) { clearTimeout(game.currentRound.timer); game.currentRound.timer = null; }
   if (games.get(game.channelId) === game) games.delete(game.channelId);
 }
@@ -599,7 +681,13 @@ function onMessage(message) {
     round.hadActivity = true;
 
     if (typeof message.content !== 'string') return;
-    if (logic.isCorrectForQuestion(message.content, round.question)) {
+    // Hoppy (truefalse) is answered by LETTER (anti-spam) — the correct letter
+    // is this round's shuffle, stored on the round. Other modes use the
+    // mode-dispatching content matcher.
+    const correct = round.question.mode === 'truefalse'
+      ? logic.parseLetterGuess(message.content) === round.correctLetter
+      : logic.isCorrectForQuestion(message.content, round.question);
+    if (correct) {
       void settleCorrect(game, round, userId);
     }
     // Wrong → do nothing (stay silent).
@@ -642,6 +730,7 @@ module.exports = {
   settleCorrect,
   settleTimeout,
   advance,
+  runCountdown,
   endGame,
   _games: games,
   _hasGame,

@@ -106,6 +106,58 @@ function isCorrectTrueFalse(guess, answer) {
 }
 
 // ---------------------------------------------------------------------------
+// Hoppy multiple-choice (truefalse mode ONLY). Plain true/false lets players spam
+// "true"/"false" to grab points; instead we present 4 shuffled options labeled
+// A–D — the correctly-spelled True + correctly-spelled False + two MISSPELLED
+// decoys (one true-style, one false-style) — and require the player to answer by
+// LETTER. Exactly one option is correct (the correctly-spelled word matching the
+// question's truth value). Pure + rng-injectable so the sim can assert on it.
+// ---------------------------------------------------------------------------
+
+// Misspelling pools for the decoys — small, varied, obviously-wrong spellings.
+const TRUE_MISSPELLINGS = ['treu', 'ture', 'truu', 'trrue'];
+const FALSE_MISSPELLINGS = ['flase', 'fasle', 'flse', 'falze'];
+
+// Pick one element from a list using the injectable rng (defaults Math.random).
+function pickOne(list, rng = Math.random) {
+  if (!Array.isArray(list) || list.length === 0) return undefined;
+  return list[Math.floor(rng() * list.length)];
+}
+
+// buildTrueFalseChoices — from the stored answer ("True"/"False"), build the 4
+// A–D options in RANDOMIZED order. Returns { choices:[{letter,text,correct}],
+// correctLetter }. The correct option is the correctly-spelled word matching the
+// truth value; the other correctly-spelled word + two misspellings are decoys.
+function buildTrueFalseChoices(answer, rng = Math.random) {
+  const truth = parseBool(answer); // true / false / null
+  const trueText = 'True';
+  const falseText = 'False';
+  const correctText = truth === false ? falseText : trueText; // null → default True side
+
+  const options = [
+    { text: trueText, correct: correctText === trueText },
+    { text: falseText, correct: correctText === falseText },
+    { text: pickOne(TRUE_MISSPELLINGS, rng), correct: false },
+    { text: pickOne(FALSE_MISSPELLINGS, rng), correct: false },
+  ];
+
+  const shuffled = shuffleArray(options, rng);
+  const letters = ['A', 'B', 'C', 'D'];
+  const choices = shuffled.map((opt, i) => ({ letter: letters[i], text: opt.text, correct: opt.correct }));
+  const correctLetter = choices.find((c) => c.correct)?.letter ?? null;
+  return { choices, correctLetter };
+}
+
+// parseLetterGuess — map a free-text guess to a choice letter 'A'..'D', or null.
+// Accepts a single letter (case-insensitive) with optional trailing punctuation:
+//   "b", "B", "B)", "b." → 'B'.  "true", "ab", "3", "" → null.
+function parseLetterGuess(guess) {
+  const g = String(guess == null ? '' : guess).trim().toLowerCase();
+  const m = /^([a-d])[).\]:,]?$/.exec(g);
+  return m ? m[1].toUpperCase() : null;
+}
+
+// ---------------------------------------------------------------------------
 // isCorrectForQuestion — the single mode-dispatching matcher used by the engine's
 // onMessage. Dispatches on question.mode so the engine never branches on format:
 //   jumble    → isCorrectForCategory(guess, answer, category) (card = lenient)
@@ -374,6 +426,8 @@ module.exports = {
   isCorrectTrivia,
   parseBool,
   isCorrectTrueFalse,
+  buildTrueFalseChoices,
+  parseLetterGuess,
   stripCardSuffix,
   hasRomanTierWord,
   isFairName,

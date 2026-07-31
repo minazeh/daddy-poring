@@ -111,9 +111,9 @@ const COMMANDS = [
     access: 'everyone',
   },
   {
-    name: 'monsterquiz',
-    usage: '/monsterquiz [questions]',
-    description: 'Starts a party quiz — pick a category (unscramble names, Hoppy True/False, Guild Banquet, or the Scholar Exam), tap Join, and race to answer each round.',
+    name: 'roquiz',
+    usage: '/roquiz [questions]',
+    description: 'Starts an RO Quiz — pick a category (unscramble names, Hoppy True/False, Guild Banquet, or the Scholar Exam), tap Join, and race to answer each round.',
     category: 'Community',
     access: 'everyone',
   },

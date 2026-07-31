@@ -18,6 +18,11 @@
 const SIGNUP_MS = 60_000;
 const ROUND_MS = 60_000;
 
+// The ONE text channel where /roquiz may be used. Anywhere else the command
+// no-ops with an ephemeral "wrong channel" reply (see commands/roquiz.js). This
+// constant is the single place to change the allowed channel.
+const ALLOWED_CHANNEL_ID = '1532740021852045493';
+
 // `questions` slash option: default 5, clamped to [1, 20].
 const DEFAULT_QUESTIONS = 5;
 const MIN_QUESTIONS = 1;
@@ -26,6 +31,14 @@ const MAX_QUESTIONS = 20;
 // End the game early after this many CONSECUTIVE fully-ignored rounds (zero
 // messages from joined participants).
 const MAX_CONSECUTIVE_IGNORED = 2;
+
+// Inter-question countdown: after a round resolves and BEFORE the next question
+// posts (rounds 2..N only — never before round 1, never after the last round),
+// show a live "next question in N seconds" message that ticks down each second.
+// Both overridable per-game (startGame opts nextQuestionSeconds / tickMs) so the
+// sim can drive it fast; nextQuestionSeconds === 0 skips the countdown entirely.
+const NEXT_QUESTION_SECONDS = 5;
+const COUNTDOWN_TICK_MS = 1000;
 
 // Fair-jumble name bounds (letters only, spaces allowed between words).
 const MIN_NAME_LETTERS = 3;
@@ -99,10 +112,13 @@ const CATEGORY_REGISTRY = {
 module.exports = {
   SIGNUP_MS,
   ROUND_MS,
+  ALLOWED_CHANNEL_ID,
   DEFAULT_QUESTIONS,
   MIN_QUESTIONS,
   MAX_QUESTIONS,
   MAX_CONSECUTIVE_IGNORED,
+  NEXT_QUESTION_SECONDS,
+  COUNTDOWN_TICK_MS,
   MIN_NAME_LETTERS,
   MAX_NAME_LETTERS,
   JOIN_CUSTOM_ID,
