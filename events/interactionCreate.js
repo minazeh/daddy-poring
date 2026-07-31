@@ -68,8 +68,10 @@ module.exports = {
         const gvgRsvpHandled = await gvgReminder.route(interaction);
         if (gvgRsvpHandled) return;
 
-        // Monster Quiz: the signup Join button (monsterquiz:join). Unique
-        // namespace — no collision with the routers around it. Acks with
+        // Monster Quiz: the category select menu (monsterquiz:category) AND the
+        // signup Join button (monsterquiz:join) — route() dispatches on customId
+        // and claims both. Unique namespace, no collision with the routers around
+        // it (partyfinder above returns false for foreign select menus). Acks with
         // deferUpdate() (silent — posts no message).
         const monsterQuizHandled = await monsterquiz.route(interaction);
         if (monsterQuizHandled) return;

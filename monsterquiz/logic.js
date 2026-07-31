@@ -50,6 +50,82 @@ function isCorrectForCategory(guess, answer, category) {
   return category === 'card' ? isCorrectCard(guess, answer) : isCorrect(guess, answer);
 }
 
+// ---------------------------------------------------------------------------
+// Trivia / True-False matching (the bundled-bank categories). Kept PURE and
+// deliberately CONSERVATIVE — a false "win" (accepting a wrong guess) is worse
+// than a false "miss", so normalization only lowercases, collapses whitespace,
+// and strips punctuation/quotes that SURROUND the answer. Internal punctuation
+// (e.g. "100°c", "5,000") is preserved so distinct answers don't collapse.
+// ---------------------------------------------------------------------------
+
+// Characters treated as strippable "wrapping" punctuation at the string ends.
+// Includes straight + curly quotes and common sentence punctuation. NOT applied
+// mid-string.
+const TRIVIA_EDGE_PUNCT = '\\s"\'`“”‘’.,!?;:()\\[\\]{}';
+const TRIVIA_EDGE_RE = new RegExp(
+  `^[${TRIVIA_EDGE_PUNCT}]+|[${TRIVIA_EDGE_PUNCT}]+$`,
+  'g',
+);
+
+function normalizeTrivia(str) {
+  const base = String(str == null ? '' : str).toLowerCase().replace(/\s+/g, ' ').trim();
+  return base.replace(TRIVIA_EDGE_RE, '').trim();
+}
+
+// isCorrectTrivia — the normalized guess equals ANY normalized accepted answer.
+// `answers` may be an array (Guild Banquet) or a single string (Scholar Exam,
+// wrapped by the caller). Empty guess never wins.
+function isCorrectTrivia(guess, answers) {
+  const g = normalizeTrivia(guess);
+  if (!g) return false;
+  const list = Array.isArray(answers) ? answers : [answers];
+  return list.some((a) => normalizeTrivia(a) === g);
+}
+
+// parseBool — map a free-text guess to a boolean, or null if it isn't a clear
+// true/false token. Accepts (case-insensitive, after trivia-normalization):
+//   true  → "true", "t"
+//   false → "false", "f"
+// Anything else (including "maybe", "1", garbage) → null (counts as a miss).
+function parseBool(guess) {
+  const g = normalizeTrivia(guess);
+  if (g === 'true' || g === 't') return true;
+  if (g === 'false' || g === 'f') return false;
+  return null;
+}
+
+// isCorrectTrueFalse — the guess parses to a boolean that matches the stored
+// answer. The stored answer is the source string "True"/"False"; it's parsed
+// through the same parseBool so casing/format never matters. A non-boolean
+// guess (parseBool null) is always a miss.
+function isCorrectTrueFalse(guess, answer) {
+  const g = parseBool(guess);
+  if (g === null) return false;
+  const a = parseBool(answer);
+  return a !== null && g === a;
+}
+
+// ---------------------------------------------------------------------------
+// isCorrectForQuestion — the single mode-dispatching matcher used by the engine's
+// onMessage. Dispatches on question.mode so the engine never branches on format:
+//   jumble    → isCorrectForCategory(guess, answer, category) (card = lenient)
+//   truefalse → isCorrectTrueFalse(guess, answer)
+//   trivia    → isCorrectTrivia(guess, answers[])
+// Unknown/absent mode falls back to the jumble matcher (back-compat).
+// ---------------------------------------------------------------------------
+function isCorrectForQuestion(guess, question) {
+  if (!question || typeof question !== 'object') return false;
+  switch (question.mode) {
+    case 'truefalse':
+      return isCorrectTrueFalse(guess, question.answer);
+    case 'trivia':
+      return isCorrectTrivia(guess, question.answers);
+    case 'jumble':
+    default:
+      return isCorrectForCategory(guess, question.answer, question.category);
+  }
+}
+
 // Count answer letters (excluding spaces) and words — for the length hint and
 // fairness bounds.
 function letterCount(name) {
@@ -220,8 +296,8 @@ function lengthHint(name) {
 // `answer` keeps the FULL original name (informative reveal; card matching is
 // lenient about the trailing "card" word — see isCorrectCard).
 //
-// Returns [{ category, record, answer, jumbleSource }]. Fewer than `n` if the
-// pool is thin — the caller notes any shortfall in the start message.
+// Returns [{ mode:'jumble', category, record, answer, jumbleSource }]. Fewer than
+// `n` if the pool is thin — the caller notes any shortfall in the start message.
 // ---------------------------------------------------------------------------
 function pickQuestions(docsByCategory, n, rng = Math.random) {
   const want = Math.max(0, Math.floor(Number(n) || 0));
@@ -237,10 +313,54 @@ function pickQuestions(docsByCategory, n, rng = Math.random) {
       const key = normalize(jumbleSource);
       if (seen.has(key)) continue;
       seen.add(key);
-      pool.push({ category, record, answer: name, jumbleSource });
+      pool.push({ mode: 'jumble', category, record, answer: name, jumbleSource });
     }
   }
   return shuffleArray(pool, rng).slice(0, want);
+}
+
+// ---------------------------------------------------------------------------
+// Bundled-bank pickers (trivia / true-false). Convert a RAW bank entry into the
+// generalized question model, filter out unusable entries, shuffle, and take up
+// to `n` — no repeats within a game (a bank is a set of distinct entries and we
+// slice a shuffled copy). Returns fewer than `n` only when the bank is thin.
+//
+// Generalized question model produced here:
+//   truefalse → { mode:'truefalse', question, answer }        (answer: "True"/"False")
+//   trivia    → { mode:'trivia', question, answers:[...] }     (>=1 accepted answer)
+// ---------------------------------------------------------------------------
+
+// Map one raw bank entry to a question object, or null if unusable for `mode`.
+function toBankQuestion(raw, mode) {
+  if (!raw || typeof raw.question !== 'string' || !raw.question.trim()) return null;
+  if (mode === 'truefalse') {
+    if (raw.answer == null) return null;
+    // Only genuine boolean-valued answers are usable.
+    if (parseBool(raw.answer) === null) return null;
+    return { mode: 'truefalse', question: raw.question, answer: String(raw.answer) };
+  }
+  if (mode === 'trivia') {
+    // Guild Banquet ships answers[]; Scholar Exam ships a single `answer` string.
+    let answers = Array.isArray(raw.answers)
+      ? raw.answers
+      : (raw.answer != null ? [raw.answer] : []);
+    answers = answers
+      .filter((a) => typeof a === 'string' && a.trim().length > 0)
+      .map(String);
+    if (answers.length === 0) return null;
+    return { mode: 'trivia', question: raw.question, answers };
+  }
+  return null;
+}
+
+// pickBankQuestions — filter+shuffle+slice a raw bank to up to `n` question
+// objects of the given mode. Deterministic given `rng` (the sim injects one).
+function pickBankQuestions(rawQuestions, mode, n, rng = Math.random) {
+  const want = Math.max(0, Math.floor(Number(n) || 0));
+  const valid = (Array.isArray(rawQuestions) ? rawQuestions : [])
+    .map((r) => toBankQuestion(r, mode))
+    .filter(Boolean);
+  return shuffleArray(valid, rng).slice(0, want);
 }
 
 module.exports = {
@@ -249,6 +369,11 @@ module.exports = {
   isCorrect,
   isCorrectCard,
   isCorrectForCategory,
+  isCorrectForQuestion,
+  normalizeTrivia,
+  isCorrectTrivia,
+  parseBool,
+  isCorrectTrueFalse,
   stripCardSuffix,
   hasRomanTierWord,
   isFairName,
@@ -262,4 +387,6 @@ module.exports = {
   buildHint,
   lengthHint,
   pickQuestions,
+  toBankQuestion,
+  pickBankQuestions,
 };

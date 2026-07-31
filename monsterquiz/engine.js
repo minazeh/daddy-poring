@@ -18,15 +18,23 @@
 // that currently no-ops, leaving a clean seam for a future quiz/db.js save.
 // ---------------------------------------------------------------------------
 
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  StringSelectMenuBuilder,
+} = require('discord.js');
 const rodb = require('../rodb/db');
 const logic = require('./logic');
+const banks = require('./banks');
 const {
   SIGNUP_MS,
   ROUND_MS,
   MAX_CONSECUTIVE_IGNORED,
   JOIN_CUSTOM_ID,
+  SELECT_CUSTOM_ID,
   CATEGORIES,
+  CATEGORY_REGISTRY,
 } = require('./constants');
 
 // channelId → game state. The single source of truth for "is a quiz running".
@@ -46,21 +54,74 @@ function joinRow(disabled = false) {
   );
 }
 
+// The category select menu (choosing phase). Options come straight from the
+// registry, in insertion order.
+function categoryRow() {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(SELECT_CUSTOM_ID)
+    .setPlaceholder('Choose a quiz category…')
+    .addOptions(
+      Object.values(CATEGORY_REGISTRY).map((c) => ({
+        label: c.label,
+        value: c.key,
+        emoji: c.emoji,
+        description: c.description,
+      })),
+    );
+  return new ActionRowBuilder().addComponents(menu);
+}
+
+function buildChooseContent(game) {
+  return [
+    '🧩 **Monster Quiz!**',
+    `Pick a category below to start a **${game.requested}-round** quiz. Only <@${game.initiatorId}> (who started it) can choose.`,
+    '',
+    Object.values(CATEGORY_REGISTRY)
+      .map((c) => `${c.emoji} **${c.label}** — ${c.description}`)
+      .join('\n'),
+  ].join('\n');
+}
+
 function rosterLine(game) {
   if (game.participants.size === 0) return '_No one yet — be the first!_';
   const names = [...game.participants.keys()].map((id) => `<@${id}>`);
   return `Joined: ${names.join(', ')}`;
 }
 
+// Signup blurb varies by the chosen category's mode; roster + Join line shared.
 function buildSignupContent(game) {
   const secs = Math.round(game.signupMs / 1000);
+  const cat = CATEGORY_REGISTRY[game.category] || {};
+  const emoji = cat.emoji || '🧩';
+  const label = cat.label || 'Monster Quiz';
+  const n = game.requested;
+  const plural = n === 1 ? '' : 's';
+
+  let blurb;
+  if (game.mode === 'truefalse') {
+    blurb = `${n} True-or-False question${plural} — **${label}**.`;
+  } else if (game.mode === 'trivia') {
+    blurb = `${n} trivia question${plural} — **${label}**. Type your answer in chat.`;
+  } else {
+    blurb = `Unscramble ${n} jumbled name${plural} from the game database — monsters, equipment, and cards.`;
+  }
+
   return [
-    '🧩 **Monster Quiz!**',
-    `Unscramble ${game.requested} jumbled name${game.requested === 1 ? '' : 's'} from the game database — monsters, equipment, and cards.`,
-    `Tap **Join** in the next **${secs}s** to play. First to type the correct name each round scores a point.`,
+    `${emoji} **Monster Quiz — ${label}!**`,
+    blurb,
+    `Tap **Join** in the next **${secs}s** to play. First to answer correctly each round scores a point.`,
     '',
     rosterLine(game),
   ].join('\n');
+}
+
+// The reveal string for a resolved round — jumble/TF use `answer`, trivia uses
+// the first (canonical) accepted answer.
+function revealAnswer(question) {
+  if (question.mode === 'trivia') {
+    return Array.isArray(question.answers) ? question.answers[0] : '';
+  }
+  return question.answer;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,80 +144,174 @@ async function buildQuestionSet(n, sampleFn, rng) {
 // command interaction (already validated as a chat input command). Options:
 //   questions  clamped question count (the command clamps; we trust it)
 //   signupMs, roundMs   timing overrides (default constants)
+//   chooseMs   category-select window override (default = signupMs)
 //   sampleFn(collectionKey, count) → docs[]   (default rodb.sampleDocs)
 //   rng        () → [0,1) (default Math.random)
 //   onGameEnd(summary)  end-of-game hook (default no-op — DB-save seam)
-// Returns the game object (or null if it did not start).
+//
+// New flow: post a CATEGORY SELECT menu (status 'choosing') and record the
+// initiator. The question set is NOT built here anymore — it's built once the
+// initiator picks a category (routeCategorySelect), because the format depends
+// on the choice. Returns the game object (or null if it did not start).
 // ---------------------------------------------------------------------------
 async function startGame(interaction, opts = {}) {
   const channelId = interaction.channelId;
 
-  // One game per channel.
+  // One game per channel (covers choosing / signup / playing alike).
   if (games.has(channelId)) {
     await interaction.reply({ content: 'A quiz is already running here.', allowedMentions: { parse: [] } });
     return null;
   }
 
-  const sampleFn = opts.sampleFn
-    || ((collectionKey, count) => rodb.sampleDocs(CATEGORIES_COLLECTION(collectionKey), count));
   const rng = opts.rng || Math.random;
   const requested = Number(opts.questions);
-
-  // Build the question set up front so we can fail fast and note any shortfall.
-  let questions = [];
-  try {
-    questions = await buildQuestionSet(requested, sampleFn, rng);
-  } catch (err) {
-    console.warn('[monsterquiz] Question build failed:', err?.message || err);
-  }
-  if (questions.length === 0) {
-    await interaction.reply({
-      content: "Couldn't build a quiz from the game database right now — please try again in a moment.",
-      allowedMentions: { parse: [] },
-    });
-    return null;
-  }
+  const signupMs = opts.signupMs != null ? opts.signupMs : SIGNUP_MS;
 
   const game = {
     channelId,
     channel: interaction.channel,
     client: interaction.client,
-    status: 'signup',
+    status: 'choosing',
+    initiatorId: interaction.user.id,
     requested,
-    questions,
-    shortfall: questions.length < requested,
+    // Chosen at select time:
+    category: null,
+    mode: null,
+    questions: null,
+    shortfall: false,
+    // Question-build inputs, stashed for routeCategorySelect:
+    sampleFn: opts.sampleFn
+      || ((collectionKey, count) => rodb.sampleDocs(CATEGORIES_COLLECTION(collectionKey), count)),
     participants: new Map(), // userId → { displayName }
     scores: new Map(),       // userId → number
     roundIndex: -1,
     currentRound: null,
     consecutiveIgnored: 0,
-    signupMs: opts.signupMs != null ? opts.signupMs : SIGNUP_MS,
+    signupMs,
     roundMs: opts.roundMs != null ? opts.roundMs : ROUND_MS,
+    chooseMs: opts.chooseMs != null ? opts.chooseMs : signupMs,
     rng,
     onGameEnd: typeof opts.onGameEnd === 'function' ? opts.onGameEnd : () => {},
+    chooseTimer: null,
     signupTimer: null,
     signupMessage: null,
   };
   games.set(channelId, game);
 
-  // Post the public signup message (with the Join button) and keep a handle so
-  // we can edit the roster in place.
+  // Post the public category-select message; keep the handle so every later
+  // phase edits this ONE message in place.
   try {
     game.signupMessage = await interaction.reply({
-      content: buildSignupContent(game),
-      components: [joinRow(false)],
+      content: buildChooseContent(game),
+      components: [categoryRow()],
       allowedMentions: { parse: [] },
       fetchReply: true,
     });
   } catch (err) {
-    console.warn('[monsterquiz] Failed to post signup message:', err?.message || err);
+    console.warn('[monsterquiz] Failed to post category message:', err?.message || err);
     games.delete(channelId);
     return null;
   }
 
+  // Guard against an orphaned channel lock: if nobody picks within chooseMs,
+  // cancel the game so the channel frees up. (Not in the original single-format
+  // flow — added because the choosing phase can otherwise hold the one-per-
+  // channel lock forever. Flagged for Nanna.)
+  game.chooseTimer = setTimeout(() => { void endChoosing(game); }, game.chooseMs);
+  if (typeof game.chooseTimer.unref === 'function') game.chooseTimer.unref();
+  return game;
+}
+
+// ---------------------------------------------------------------------------
+// endChoosing — the category-select window closed with no pick. Cancel the game
+// and free the channel. Never throws.
+// ---------------------------------------------------------------------------
+async function endChoosing(game) {
+  if (game.status !== 'choosing') return;
+  game.chooseTimer = null;
+  try {
+    if (game.signupMessage) {
+      await game.signupMessage.edit({
+        content: 'Monster Quiz — no category chosen — quiz cancelled.',
+        components: [],
+        allowedMentions: { parse: [] },
+      });
+    }
+  } catch { /* best-effort */ }
+  cleanup(game);
+}
+
+// ---------------------------------------------------------------------------
+// routeCategorySelect — the initiator picked a category from the select menu.
+// Ack is deferUpdate() (silent). Only the initiator may pick; anyone else is a
+// silent no-op. Builds the chosen format's question set, then transitions the
+// SAME message into the signup phase (Join button) and arms the signup timer.
+// An empty set fails gracefully (public edit + cleanup). Returns true (owned).
+// ---------------------------------------------------------------------------
+async function routeCategorySelect(interaction) {
+  // Silent ack (never ephemeral / visible).
+  try { await interaction.deferUpdate(); } catch { /* window expired — ignore */ }
+
+  const game = games.get(interaction.channelId);
+  if (!game || game.status !== 'choosing') return true; // stale menu — no-op.
+  if (interaction.user.id !== game.initiatorId) return true; // only the initiator picks.
+
+  const key = interaction.values?.[0];
+  const cat = CATEGORY_REGISTRY[key];
+  if (!cat) return true; // unknown option — ignore.
+
+  // Claim the choice: stop the choose timer so a late timeout can't cancel us.
+  if (game.chooseTimer) { clearTimeout(game.chooseTimer); game.chooseTimer = null; }
+  game.category = cat.key;
+  game.mode = cat.mode;
+
+  // Build the question set for the chosen format.
+  let questions = [];
+  try {
+    if (cat.mode === 'jumble') {
+      questions = await buildQuestionSet(game.requested, game.sampleFn, game.rng);
+    } else {
+      questions = logic.pickBankQuestions(banks.get(cat.key), cat.mode, game.requested, game.rng);
+    }
+  } catch (err) {
+    console.warn('[monsterquiz] Question build failed:', err?.message || err);
+  }
+
+  if (!questions || questions.length === 0) {
+    const why = cat.mode === 'jumble'
+      ? "Couldn't build a quiz from the game database right now — please try again in a moment."
+      : `Couldn't load the ${cat.label} question bank right now — please try again in a moment.`;
+    try {
+      if (game.signupMessage) {
+        await game.signupMessage.edit({ content: why, components: [], allowedMentions: { parse: [] } });
+      }
+    } catch { /* best-effort */ }
+    cleanup(game);
+    return true;
+  }
+
+  game.questions = questions;
+  game.shortfall = questions.length < game.requested;
+  game.status = 'signup';
+
+  // Transition the ONE message into the signup phase.
+  try {
+    if (game.signupMessage) {
+      await game.signupMessage.edit({
+        content: buildSignupContent(game),
+        components: [joinRow(false)],
+        allowedMentions: { parse: [] },
+      });
+    }
+  } catch (err) {
+    console.warn('[monsterquiz] Failed to post signup message:', err?.message || err);
+    cleanup(game);
+    return true;
+  }
+
   game.signupTimer = setTimeout(() => { void endSignup(game); }, game.signupMs);
   if (typeof game.signupTimer.unref === 'function') game.signupTimer.unref();
-  return game;
+  return true;
 }
 
 // Resolve a category collectionKey to the actual rodb collection name.
@@ -170,6 +325,11 @@ function CATEGORIES_COLLECTION(collectionKey) {
 // (silent — posts no message). Re-taps and taps after signup no-op silently.
 // ---------------------------------------------------------------------------
 async function route(interaction) {
+  // Category select menu (choosing phase). Claimed before the button check.
+  if (interaction.isStringSelectMenu?.() && interaction.customId === SELECT_CUSTOM_ID) {
+    return routeCategorySelect(interaction);
+  }
+
   if (!interaction.isButton?.()) return false;
   if (interaction.customId !== JOIN_CUSTOM_ID) return false;
 
@@ -245,9 +405,16 @@ async function endSignup(game) {
     `🎮 **Monster Quiz starting!** ${game.participants.size} player${game.participants.size === 1 ? '' : 's'} · ${game.questions.length} round${game.questions.length === 1 ? '' : 's'}.`,
   ];
   if (game.shortfall) {
-    startLines.push(`_(Only ${game.questions.length} fair name${game.questions.length === 1 ? '' : 's'} available right now — running with what we have.)_`);
+    const noun = game.mode === 'jumble' ? 'fair name' : 'question';
+    startLines.push(`_(Only ${game.questions.length} ${noun}${game.questions.length === 1 ? '' : 's'} available right now — running with what we have.)_`);
   }
-  startLines.push('Type the unscrambled name in chat. First correct answer wins the round.');
+  if (game.mode === 'truefalse') {
+    startLines.push('Answer **True** or **False** in chat. First correct answer wins the round.');
+  } else if (game.mode === 'trivia') {
+    startLines.push('Type your answer in chat. First correct answer wins the round.');
+  } else {
+    startLines.push('Type the unscrambled name in chat. First correct answer wins the round.');
+  }
   await safeSend(game, startLines.join('\n'));
 
   game.roundIndex = -1;
@@ -261,7 +428,6 @@ async function endSignup(game) {
 // ---------------------------------------------------------------------------
 async function startRound(game) {
   const q = game.questions[game.roundIndex];
-  const noun = CATEGORIES[q.category].noun;
   const round = {
     index: game.roundIndex,
     question: q,
@@ -271,19 +437,40 @@ async function startRound(game) {
   };
   game.currentRound = round;
 
-  // Jumble + length hint describe the JUMBLE SOURCE (for cards that's the base
-  // name with the trailing " Card" removed). The reveal still uses the full
-  // answer name.
-  const jumbleSource = q.jumbleSource || q.answer;
-  const jumbled = logic.jumble(jumbleSource, game.rng || Math.random);
-  const hint = `${logic.buildHint(q.record, q.category)} · ${logic.lengthHint(jumbleSource)}`;
-  const content = [
-    `**Round ${game.roundIndex + 1}/${game.questions.length}** — Unscramble this **${noun}**:`,
-    '```',
-    jumbled,
-    '```',
-    `**Hint:** ${hint}`,
-  ].join('\n');
+  const header = `**Round ${game.roundIndex + 1}/${game.questions.length}**`;
+  let content;
+  if (q.mode === 'truefalse') {
+    content = [
+      `${header} — True or False?`,
+      '```',
+      q.question,
+      '```',
+      'Answer **True** or **False**.',
+    ].join('\n');
+  } else if (q.mode === 'trivia') {
+    content = [
+      `${header}`,
+      '```',
+      q.question,
+      '```',
+      'Type your answer in chat.',
+    ].join('\n');
+  } else {
+    // jumble: the jumble + length hint describe the JUMBLE SOURCE (for cards
+    // that's the base name with the trailing " Card" removed). The reveal still
+    // uses the full answer name.
+    const noun = CATEGORIES[q.category].noun;
+    const jumbleSource = q.jumbleSource || q.answer;
+    const jumbled = logic.jumble(jumbleSource, game.rng || Math.random);
+    const hint = `${logic.buildHint(q.record, q.category)} · ${logic.lengthHint(jumbleSource)}`;
+    content = [
+      `${header} — Unscramble this **${noun}**:`,
+      '```',
+      jumbled,
+      '```',
+      `**Hint:** ${hint}`,
+    ].join('\n');
+  }
   await safeSend(game, content);
 
   round.timer = setTimeout(() => { void settleTimeout(game, round); }, game.roundMs);
@@ -304,7 +491,7 @@ async function settleCorrect(game, round, userId) {
 
   await safeSend(
     game,
-    `✅ <@${userId}> got it — it was **${round.question.answer}**! (+1)`,
+    `✅ <@${userId}> got it — it was **${revealAnswer(round.question)}**! (+1)`,
     { users: [userId] },
   );
   await advance(game);
@@ -321,7 +508,7 @@ async function settleTimeout(game, round) {
   round.resolved = true;
   round.timer = null;
 
-  await safeSend(game, `⏱️ Time's up — it was **${round.question.answer}**.`);
+  await safeSend(game, `⏱️ Time's up — it was **${revealAnswer(round.question)}**.`);
 
   if (round.hadActivity) {
     game.consecutiveIgnored = 0;
@@ -385,6 +572,7 @@ async function endGame(game) {
 
 // Remove the game from the channel map and clear any live timers.
 function cleanup(game) {
+  if (game.chooseTimer) { clearTimeout(game.chooseTimer); game.chooseTimer = null; }
   if (game.signupTimer) { clearTimeout(game.signupTimer); game.signupTimer = null; }
   if (game.currentRound?.timer) { clearTimeout(game.currentRound.timer); game.currentRound.timer = null; }
   if (games.get(game.channelId) === game) games.delete(game.channelId);
@@ -411,7 +599,7 @@ function onMessage(message) {
     round.hadActivity = true;
 
     if (typeof message.content !== 'string') return;
-    if (logic.isCorrectForCategory(message.content, round.question.answer, round.question.category)) {
+    if (logic.isCorrectForQuestion(message.content, round.question)) {
       void settleCorrect(game, round, userId);
     }
     // Wrong → do nothing (stay silent).
@@ -447,6 +635,8 @@ module.exports = {
   onMessage,
   // internals exported for the simulation / future tests
   buildQuestionSet,
+  routeCategorySelect,
+  endChoosing,
   endSignup,
   startRound,
   settleCorrect,

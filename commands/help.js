@@ -113,7 +113,7 @@ const COMMANDS = [
   {
     name: 'monsterquiz',
     usage: '/monsterquiz [questions]',
-    description: 'Starts an anagram quiz — unscramble monster, item, and card names from the game database. Tap Join to play; first correct answer each round scores.',
+    description: 'Starts a party quiz — pick a category (unscramble names, Hoppy True/False, Guild Banquet, or the Scholar Exam), tap Join, and race to answer each round.',
     category: 'Community',
     access: 'everyone',
   },

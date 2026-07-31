@@ -1,12 +1,10 @@
 const { SlashCommandBuilder } = require('discord.js');
-const rodb = require('../rodb/db');
 const engine = require('../monsterquiz/engine');
 const {
   DEFAULT_QUESTIONS,
   MIN_QUESTIONS,
   MAX_QUESTIONS,
 } = require('../monsterquiz/constants');
-const { NOT_AVAILABLE_MSG } = require('../rodb/format');
 
 // Clamp defensively even though the option enforces min/max — protects against
 // any client that sends an out-of-range value.
@@ -19,7 +17,7 @@ function clampQuestions(n) {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('monsterquiz')
-    .setDescription('Start an anagram quiz — unscramble monster, item, and card names from the game database.')
+    .setDescription('Start a party quiz — pick a category: unscramble names, True/False, or trivia.')
     .addIntegerOption((opt) =>
       opt
         .setName('questions')
@@ -29,13 +27,12 @@ module.exports = {
         .setRequired(false)),
 
   // Available to EVERYONE. Every reply is public (no ephemeral anywhere).
+  //
+  // No rodb readiness gate here: the category menu always posts. Three of the
+  // four categories (Hoppy / Guild Banquet / Scholar) run from bundled banks and
+  // work with the game database offline; only the jumble category needs rodb, and
+  // it fails gracefully at pick time if the DB is down (see routeCategorySelect).
   async execute(interaction) {
-    // Game database must be up to source questions.
-    if (!rodb.isReady()) {
-      await interaction.reply({ content: NOT_AVAILABLE_MSG, allowedMentions: { parse: [] } });
-      return;
-    }
-
     const raw = interaction.options.getInteger('questions');
     const questions = raw == null ? DEFAULT_QUESTIONS : clampQuestions(raw);
 
