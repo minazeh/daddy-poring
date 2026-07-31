@@ -34,6 +34,7 @@ const ROLE_IDS = {
 const REVIEWER_ROLE_IDS = [
   '1518076150692188200',
   '1518076612787048548',
+  '1518666539182592080',
 ];
 
 // Modal text-input customIds.
