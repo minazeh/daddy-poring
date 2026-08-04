@@ -5,7 +5,8 @@
 // customId namespace tokens. Kept here so command + handlers agree.
 const IDS = {
   START_BUTTON:    'guildapp:start',  // public "Start Application" button
-  MODAL:           'guildapp:modal',  // the 4-input modal (IGN/Playstyle/PrevGuild/Inviter)
+  // The 5-component modal: IGN / Gear Rating / Prev Guild & Contribution / Inviter / Attendance
+  MODAL:           'guildapp:modal',
   REVIEW_PREFIX:   'appreview',       // appreview:<action>:<applicantUserId>
 };
 
@@ -37,12 +38,26 @@ const REVIEWER_ROLE_IDS = [
   '1518666539182592080',
 ];
 
-// Modal text-input customIds.
+// Modal component customIds.
+//
+// Discord caps a modal at 5 top-level components, so the form is exactly 5 and
+// there is no room for a 6th. `playstyle` was dropped (Conrad's call, 2026-08-04)
+// to make room for the gear-rating and attendance questions. The old
+// `prevguild` ("Previous Guild (CBT)") short input was replaced by the
+// paragraph-style `prevguildcontrib`, which absorbs it.
 const FIELDS = {
-  IGN:           'ign',
-  PLAYSTYLE:     'playstyle',
-  PREVIOUS_GUILD:'prevguild',
-  INVITER:       'inviter',
+  IGN:              'ign',
+  GEAR_RATING:      'gearrating',
+  PREVIOUS_GUILD:   'prevguildcontrib', // paragraph: previous guild(s) + contribution
+  INVITER:          'inviter',
+  ATTENDANCE:       'attendance',       // StringSelect (Yes/No) inside a Label
 };
 
-module.exports = { IDS, FIELDS, REVIEWER_ROLE_IDS, ROLE_IDS, CLASS_ROLE_BY_ID };
+// Values carried by the attendance select's two options, plus how each renders
+// in the review embed. Reviewers scan this field, so it gets an emoji marker.
+const ATTENDANCE_OPTIONS = [
+  { label: 'Yes', value: 'yes', display: '✅ Yes' },
+  { label: 'No',  value: 'no',  display: '❌ No'  },
+];
+
+module.exports = { IDS, FIELDS, ATTENDANCE_OPTIONS, REVIEWER_ROLE_IDS, ROLE_IDS, CLASS_ROLE_BY_ID };

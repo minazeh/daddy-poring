@@ -23,9 +23,10 @@ module.exports = {
         'Click **Start Application** below to apply for membership.\n\n' +
         "Here's what you'll be asked to fill in:\n\n" +
         '**In-game Name** — your actual in-game character name (IGN)\n' +
-        '**Playstyle** — how you like to play, e.g. competitive, casual, purely PvP, purely PvE, or something more elaborate\n' +
-        '**Previous Guild (CBT)** — the guild you were in during Closed Beta, if any\n' +
-        '**Inviter** — who invited you to apply, if anyone\n\n' +
+        '**Current Gear Rating** — your gear rating as it stands right now\n' +
+        '**Previous Guild & Contribution** — the guild(s) you were in and what you contributed there, if any\n' +
+        '**Inviter** — who invited you to apply, if anyone\n' +
+        '**Attendance** — whether you can commit to 100% guild event attendance with mandatory ENGLISH voice comms\n\n' +
         'Your application is subject for approval. Please be patient.'
       )
       .setColor(0x2b2d31); // dark embed accent matching the reference

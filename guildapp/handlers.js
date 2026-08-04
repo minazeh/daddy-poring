@@ -6,68 +6,122 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  LabelBuilder,
+  StringSelectMenuBuilder,
 } = require('discord.js');
 
-const { IDS, FIELDS, REVIEWER_ROLE_IDS, ROLE_IDS, CLASS_ROLE_BY_ID } = require('./constants');
+const {
+  IDS,
+  FIELDS,
+  ATTENDANCE_OPTIONS,
+  REVIEWER_ROLE_IDS,
+  ROLE_IDS,
+  CLASS_ROLE_BY_ID,
+} = require('./constants');
 
 const APPLICATION_CHANNEL_ID = process.env.APPLICATION_CHANNEL_ID || '1518623626247671878';
 
 // ---------------------------------------------------------------------------
-// 2. Start button -> open the 4-input modal.
+// 2. Start button -> open the 5-component modal.
+//
+// Discord caps a modal at 5 top-level components. Every component here is a
+// Label (type 18) wrapping its input — the current modal shape — rather than
+// the legacy ActionRow-wrapped text inputs, so the four text questions and the
+// attendance select all use one consistent model. A Label carries the question
+// text (<=45 chars) plus an optional description (<=100 chars), which is where
+// the long-form attendance question lives.
 // ---------------------------------------------------------------------------
 async function handleStartButton(interaction) {
   const modal = new ModalBuilder()
     .setCustomId(IDS.MODAL)
     .setTitle('Guild Application');
 
-  const ign = new TextInputBuilder()
-    .setCustomId(FIELDS.IGN)
+  const ign = new LabelBuilder()
     .setLabel('In-game Name')
-    .setStyle(TextInputStyle.Short)
-    .setPlaceholder('Your actual in-game name')
-    .setRequired(true);
+    .setTextInputComponent(
+      new TextInputBuilder()
+        .setCustomId(FIELDS.IGN)
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Your actual in-game name')
+        .setRequired(true),
+    );
 
-  const playstyle = new TextInputBuilder()
-    .setCustomId(FIELDS.PLAYSTYLE)
-    .setLabel('Playstyle')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+  const gearRating = new LabelBuilder()
+    .setLabel('Current Gear Rating')
+    .setTextInputComponent(
+      new TextInputBuilder()
+        .setCustomId(FIELDS.GEAR_RATING)
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Your current gear rating')
+        .setRequired(true),
+    );
 
-  const prevGuild = new TextInputBuilder()
-    .setCustomId(FIELDS.PREVIOUS_GUILD)
-    .setLabel('Previous Guild (CBT)')
-    .setStyle(TextInputStyle.Short)
-    .setPlaceholder('Guild during Closed Beta, if any')
-    .setRequired(false);
+  const prevGuild = new LabelBuilder()
+    .setLabel('Previous Guild & Contribution')
+    .setTextInputComponent(
+      new TextInputBuilder()
+        .setCustomId(FIELDS.PREVIOUS_GUILD)
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder('Guild(s) you were in and what you contributed')
+        .setRequired(false),
+    );
 
-  const inviter = new TextInputBuilder()
-    .setCustomId(FIELDS.INVITER)
+  const inviter = new LabelBuilder()
     .setLabel('Inviter')
-    .setStyle(TextInputStyle.Short)
-    .setPlaceholder('Who invited you? (if anyone)')
-    .setRequired(false);
+    .setTextInputComponent(
+      new TextInputBuilder()
+        .setCustomId(FIELDS.INVITER)
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Who invited you? (if anyone)')
+        .setRequired(false),
+    );
 
-  // Each text input must sit in its own action row. Discord caps modals at 5.
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(ign),
-    new ActionRowBuilder().addComponents(playstyle),
-    new ActionRowBuilder().addComponents(prevGuild),
-    new ActionRowBuilder().addComponents(inviter),
-  );
+  const attendance = new LabelBuilder()
+    .setLabel('Can you commit to full attendance?')
+    .setDescription('100% guild event attendance with mandatory ENGLISH voice comms.')
+    .setStringSelectMenuComponent(
+      new StringSelectMenuBuilder()
+        .setCustomId(FIELDS.ATTENDANCE)
+        .setPlaceholder('Select Yes or No')
+        .setRequired(true)
+        .setMinValues(1)
+        .setMaxValues(1)
+        .addOptions(
+          ...ATTENDANCE_OPTIONS.map(o => ({ label: o.label, value: o.value })),
+        ),
+    );
+
+  // Exactly 5 — Discord's hard cap for modal components.
+  modal.addLabelComponents(ign, gearRating, prevGuild, inviter, attendance);
 
   await interaction.showModal(modal);
 }
 
+// Maps a submitted attendance value ('yes' | 'no') to its embed rendering.
+// Anything unrecognised or missing falls back to the usual em-dash.
+function renderAttendance(value) {
+  const match = ATTENDANCE_OPTIONS.find(o => o.value === value);
+  return match ? match.display : '—';
+}
+
 // ---------------------------------------------------------------------------
-// 3. Modal submit -> all 4 answers are present; build + post the application
+// 3. Modal submit -> all 5 answers are present; build + post the application
 //    embed to the application channel, then ephemerally confirm to the applicant.
+//
+// NOTE: the attendance answer is a string select, not a text input, so it is
+// read with getStringSelectValues() (returns an array) rather than
+// getTextInputValue(). The select is required, so Discord guarantees one value,
+// but the read is still guarded against an empty result.
 // ---------------------------------------------------------------------------
 async function handleModalSubmit(interaction) {
+  const attendanceValues = interaction.fields.getStringSelectValues(FIELDS.ATTENDANCE) || [];
+
   const answers = {
-    ign:       interaction.fields.getTextInputValue(FIELDS.IGN).trim(),
-    playstyle: interaction.fields.getTextInputValue(FIELDS.PLAYSTYLE).trim(),
-    prevGuild: interaction.fields.getTextInputValue(FIELDS.PREVIOUS_GUILD).trim(),
-    inviter:   interaction.fields.getTextInputValue(FIELDS.INVITER).trim(),
+    ign:        interaction.fields.getTextInputValue(FIELDS.IGN).trim(),
+    gearRating: interaction.fields.getTextInputValue(FIELDS.GEAR_RATING).trim(),
+    prevGuild:  interaction.fields.getTextInputValue(FIELDS.PREVIOUS_GUILD).trim(),
+    inviter:    interaction.fields.getTextInputValue(FIELDS.INVITER).trim(),
+    attendance: attendanceValues[0] || '',
   };
 
   // Detect class from the applicant's self-assigned class role.
@@ -80,13 +134,14 @@ async function handleModalSubmit(interaction) {
     .setColor(0x2b2d31)
     .setDescription(`Applicant: ${interaction.user} (${interaction.user.tag})`)
     .addFields(
-      { name: 'In-game Name',         value: answers.ign || '—',       inline: false },
-      { name: 'Class',                value: applicantClass,            inline: false },
-      { name: 'Playstyle',            value: answers.playstyle || '—', inline: true  },
-      { name: 'Previous Guild (CBT)', value: answers.prevGuild || '—', inline: true  },
-      { name: 'Inviter',              value: answers.inviter || '—',   inline: false },
-      { name: '​',                    value: '────────────────────',   inline: false },
-      { name: 'Status',               value: 'Pending',                inline: false },
+      { name: 'In-game Name',                  value: answers.ign || '—',                    inline: false },
+      { name: 'Class',                         value: applicantClass,                        inline: false },
+      { name: 'Current Gear Rating',           value: answers.gearRating || '—',             inline: true  },
+      { name: 'Attendance + EN Voice',         value: renderAttendance(answers.attendance),  inline: true  },
+      { name: 'Previous Guild & Contribution', value: answers.prevGuild || '—',              inline: false },
+      { name: 'Inviter',                       value: answers.inviter || '—',                inline: false },
+      { name: '​',                             value: '────────────────────',                inline: false },
+      { name: 'Status',                        value: 'Pending',                             inline: false },
     )
     .setTimestamp();
 
