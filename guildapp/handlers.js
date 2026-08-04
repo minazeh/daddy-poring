@@ -57,7 +57,8 @@ async function handleStartButton(interaction) {
     );
 
   const prevGuild = new LabelBuilder()
-    .setLabel('Previous Guild & Contribution')
+    .setLabel('Previous guild and total contribution')
+    .setDescription('Previous guild and total amount of contribution you have.')
     .setTextInputComponent(
       new TextInputBuilder()
         .setCustomId(FIELDS.PREVIOUS_GUILD)
@@ -138,7 +139,7 @@ async function handleModalSubmit(interaction) {
       { name: 'Class',                         value: applicantClass,                        inline: false },
       { name: 'Current Gear Rating',           value: answers.gearRating || '—',             inline: true  },
       { name: 'Attendance + EN Voice',         value: renderAttendance(answers.attendance),  inline: true  },
-      { name: 'Previous Guild & Contribution', value: answers.prevGuild || '—',              inline: false },
+      { name: 'Previous Guild & Total Contribution', value: answers.prevGuild || '—',        inline: false },
       { name: 'Inviter',                       value: answers.inviter || '—',                inline: false },
       { name: '​',                             value: '────────────────────',                inline: false },
       { name: 'Status',                        value: 'Pending',                             inline: false },
