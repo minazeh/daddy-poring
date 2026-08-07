@@ -107,6 +107,8 @@ const CLASS_ALLOWED_CATEGORIES = {
   '1518174090538778635': ['DPS'],          // Gunslinger
   '1518174067411259503': ['DPS'],          // Hunter
   '1518174089087422506': ['Tank', 'DPS'],  // Knight  (Tank primary, can also DPS)
+  '1534862381610696754': ['DPS'],          // Monk
+  '1534862070976352266': ['Tank', 'DPS'],  // Paladin (Tank primary, can also DPS)
   '1518174089817227415': ['DPS', 'Heal'],  // Priest  (DPS primary, can also Heal)
   '1518238680051875920': ['DPS'],          // Wizard
 };
@@ -115,6 +117,7 @@ const CLASS_ALLOWED_CATEGORIES = {
 // does). Retained for any incidental lookups; kept = allowed[0] for each class.
 const CLASS_CATEGORY_BY_ROLE_ID = {
   '1518174089087422506': 'Tank', // Knight  (primary)
+  '1534862070976352266': 'Tank', // Paladin (primary)
   '1518174089817227415': 'DPS',  // Priest  (primary)
   '1518174065892790343': 'DPS',  // Assassin
   '1518174067411259503': 'DPS',  // Hunter
@@ -122,6 +125,7 @@ const CLASS_CATEGORY_BY_ROLE_ID = {
   '1518235600833220789': 'DPS',  // Blacksmith
   '1518238680051875920': 'DPS',  // Wizard
   '1518235678163341422': 'DPS',  // Druid
+  '1534862381610696754': 'DPS',  // Monk
 };
 
 // Sanity: every class role in the shared roster must have an allowed-categories

@@ -98,11 +98,11 @@ assert('No roles → isSub=false',  neitherDoc.isSub  === false);
 console.log('\n--- 3. className resolution ---');
 
 const classEntries = Object.entries(CLASS_ROLE_BY_ID);
-assert('CLASS_ROLE_BY_ID has 8 entries', classEntries.length === 8, `got ${classEntries.length}`);
+assert('CLASS_ROLE_BY_ID has 10 entries', classEntries.length === 10, `got ${classEntries.length}`);
 
-const expectedClasses = ['Assassin','Hunter','Knight','Priest','Gunslinger','Blacksmith','Wizard','Druid'].sort();
+const expectedClasses = ['Assassin','Hunter','Knight','Priest','Gunslinger','Blacksmith','Wizard','Druid','Paladin','Monk'].sort();
 const actualClasses   = classEntries.map(([, n]) => n).sort();
-assert('All 8 class names present', JSON.stringify(actualClasses) === JSON.stringify(expectedClasses), actualClasses.join(','));
+assert('All 10 class names present', JSON.stringify(actualClasses) === JSON.stringify(expectedClasses), actualClasses.join(','));
 
 const knightRoleId = classEntries.find(([, n]) => n === 'Knight')?.[0];
 assert('Knight role ID exists', !!knightRoleId, knightRoleId);
@@ -116,7 +116,7 @@ const noClassDoc = memberToDoc(makeMember({ userId: 'u6', username: 'frank', dis
 assert('No class role → className=null',   noClassDoc.className   === null);
 assert('No class role → classRoleId=null', noClassDoc.classRoleId === null);
 
-// All 8 classes resolve
+// All 10 classes resolve
 for (const [roleId, name] of classEntries) {
   const doc = memberToDoc(makeMember({ userId: `cx_${roleId}`, username: name, displayName: name, roles: [roleId, DADDY_ROLE_ID] }));
   assert(`Class ${name} resolves correctly`, doc.className === name && doc.classRoleId === roleId);

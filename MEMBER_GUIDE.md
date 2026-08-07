@@ -42,7 +42,7 @@ an event (MVP, raid, etc.) or **ask for a carry**. Everything is posted in the
 **#party-finder** channel so others can join.
 
 > You need your guild **class role** (Assassin, Hunter, Knight, Priest, Gunslinger,
-> Blacksmith, Wizard, or Druid) and your member role to use Party Finder. If the bot
+> Blacksmith, Wizard, Druid, Paladin, or Monk) and your member role to use Party Finder. If the bot
 > says you don't have a recognized class role, ask an officer to assign it.
 
 ### Opening the Party Finder card
@@ -91,7 +91,7 @@ On any open party card you'll see **Join as Tank**, **Join as Heal**, and **Join
 DPS** buttons.
 
 - Click the role you want. You can only join a role **your class is allowed to fill**
-  — for example a Knight can join **Tank or DPS**, a Priest can join **DPS or Heal**,
+  — for example a Knight or Paladin can join **Tank or DPS**, a Priest can join **DPS or Heal**,
   most other classes are **DPS**. If you pick one your class can't do, the bot tells
   you which roles you *can* take.
 - **Switching:** already in a slot? Click a different role to switch (if that role has

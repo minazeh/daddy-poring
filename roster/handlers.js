@@ -20,6 +20,7 @@ const { EmbedBuilder } = require('discord.js');
 // settings doc exists; fall back to this otherwise.
 const DEFAULT_CLASS_ROLES = {
   Knight: 'tank',
+  Paladin: 'tank',
   Priest: 'healer',
   Assassin: 'dps',
   Hunter: 'dps',
@@ -27,6 +28,7 @@ const DEFAULT_CLASS_ROLES = {
   Blacksmith: 'dps',
   Wizard: 'dps',
   Druid: 'dps',
+  Monk: 'dps',
 };
 
 const ROLE_ICONS = { tank: '🛡️', healer: '⚕️', dps: '⚔️' };
@@ -67,7 +69,11 @@ function isEmptyParty(p) {
 function classToRole(className, classRoles) {
   if (!className) return 'dps';
   const map = classRoles || DEFAULT_CLASS_ROLES;
-  return map[className] || 'dps';
+  // A class the settings doc predates (e.g. Paladin/Monk on a settings doc last
+  // saved when there were only 8 classes) falls back to the DEFAULT map rather
+  // than a blanket 'dps' — otherwise a new Tank class silently renders as DPS
+  // until Settings is re-saved in the web app. No-op for classes the doc has.
+  return map[className] || DEFAULT_CLASS_ROLES[className] || 'dps';
 }
 
 function roleIcon(role) {

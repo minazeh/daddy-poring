@@ -81,6 +81,8 @@ module.exports = {
           { name: 'Blacksmith',  value: 'blacksmith' },
           { name: 'Wizard',      value: 'wizard'     },
           { name: 'Druid',       value: 'druid'      },
+          { name: 'Paladin',     value: 'paladin'    },
+          { name: 'Monk',        value: 'monk'       },
         )
     )
     .addStringOption(option =>

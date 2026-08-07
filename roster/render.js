@@ -20,7 +20,7 @@
 //
 // Class→role + required-class logic is inlined here (web app is a separate repo).
 // Defaults MUST match the web app:
-//   Knight=tank, Priest=healer, everything else / null = dps.
+//   Knight/Paladin=tank, Priest=healer, everything else / null = dps.
 //   required classes ← settings.requiredClasses (fallback Priest×1).
 //   partySize ← settings.partySize (fallback 5).
 //
@@ -64,6 +64,7 @@ function fBold(size) { return `${size}px ${fontsRegistered ? FONT_BOLD : 'sans-s
 // ---------------------------------------------------------------------------
 const DEFAULT_CLASS_ROLES = {
   Knight: 'tank',
+  Paladin: 'tank',
   Priest: 'healer',
   Assassin: 'dps',
   Hunter: 'dps',
@@ -71,6 +72,7 @@ const DEFAULT_CLASS_ROLES = {
   Blacksmith: 'dps',
   Wizard: 'dps',
   Druid: 'dps',
+  Monk: 'dps',
 };
 
 const DEFAULT_REQUIRED_CLASSES = [{ className: 'Priest', min: 1 }];
@@ -133,7 +135,11 @@ function isEmptyParty(p) {
 function classToRole(className, classRoles) {
   if (!className) return 'dps';
   const map = classRoles || DEFAULT_CLASS_ROLES;
-  return map[className] || 'dps';
+  // A class the settings doc predates (e.g. Paladin/Monk on a settings doc last
+  // saved when there were only 8 classes) falls back to the DEFAULT map rather
+  // than a blanket 'dps' — otherwise a new Tank class silently renders as DPS
+  // until Settings is re-saved in the web app. No-op for classes the doc has.
+  return map[className] || DEFAULT_CLASS_ROLES[className] || 'dps';
 }
 
 function computeMissing(party, ctx) {
