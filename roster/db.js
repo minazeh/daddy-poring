@@ -25,6 +25,16 @@
 //                  updatedAt }
 //   settings   — single global doc { _id:"global", requiredClasses, classRoles,
 //                  partySize, mainPartyCount, subPartyCount, updatedAt }
+//
+//   polarityRaids   — { raidId:"${type}-polarity-${kind}-${index}", type,
+//                       kind:"main"|"normal", index, name, position,
+//                       leaderId:string|null, updatedAt }
+//   polarityParties — { partyId:"${raidId}-p${position}", type, raidId,
+//                       kind, name, memberIds:string[], position,
+//                       lockedSlots:number[], updatedAt }
+//     The POLARITY layout is a SECOND, independent raid arrangement owned by the
+//     web app (6 raids per guild: 2 main x 5 parties, 4 normal x 8). It shares
+//     nothing with `parties` / `raidGroups`. Read-only here, same as the rest.
 // ---------------------------------------------------------------------------
 
 const { MongoClient } = require('mongodb');
@@ -107,6 +117,25 @@ async function getRaidGroups(guild) {
   return db.collection('raidGroups').find({ type: guild }).sort({ position: 1 }).toArray();
 }
 
+// POLARITY raids where type === guild, sorted by position ascending (the web
+// app writes position 0-1 for the two main raids, 2-5 for the four normal
+// raids, so this is already display order). Read-only.
+async function getPolarityRaids(guild) {
+  if (!isReady()) return [];
+  return db.collection('polarityRaids').find({ type: guild }).sort({ position: 1 }).toArray();
+}
+
+// POLARITY parties where type === guild, sorted by raid then slot position.
+// Read-only.
+async function getPolarityParties(guild) {
+  if (!isReady()) return [];
+  return db
+    .collection('polarityParties')
+    .find({ type: guild })
+    .sort({ raidId: 1, position: 1 })
+    .toArray();
+}
+
 // The single global settings doc, or null if none.
 async function getSettings() {
   if (!isReady()) return null;
@@ -148,6 +177,8 @@ module.exports = {
   getMembers,
   getParties,
   getRaidGroups,
+  getPolarityRaids,
+  getPolarityParties,
   getSettings,
   getMember,
   getMemberMeta,

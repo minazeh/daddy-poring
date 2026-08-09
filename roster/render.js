@@ -535,8 +535,82 @@ function buildRaidImages(guild, data) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// POLARITY RAIDS — one image PER RAID for a guild's second, independent raid
+// layout (web-owned `polarityRaids` / `polarityParties`; nothing to do with the
+// GvG main/sub fields).
+//
+// Structure per guild: 2 main raids x 5 parties + 4 normal raids x 8 parties.
+// ONE IMAGE PER RAID rather than a pooled field image, because the shared
+// layoutSection() caps a picture at 2 rows: 5 parties fit one row and 8 fit two
+// at the natural 360px card width, but pooling all 4 normal raids (32 parties)
+// would need 16 columns and force cards below the MIN_CARD_W legibility floor.
+// Per-raid images keep every card readable and keep the raid name in the band.
+//
+// Visual language is IDENTICAL to /guildroster — same palette, same card,
+// same drawn role badges, same rose-red "missing required class" card, same
+// gold crown/tag/row-wash for a raid leader — because it reuses drawCard(),
+// layoutSection(), renderSectionImage() and computeLeaderSet() verbatim.
+//
+// Raids with no non-empty party are SKIPPED (an all-empty board returns [], and
+// the command replies with a text notice instead of six blank pictures).
+// Returns [{ raidId, kind, title, filename, buffer }, ...] in raid order.
+// ---------------------------------------------------------------------------
+function buildPolarityImages(guild, data) {
+  const { polarityRaids = [], polarityParties = [] } = data;
+  const gctx = buildContext(data);
+  const partyMap = new Map(polarityParties.map(p => [p.partyId, p]));
+
+  // Parties grouped by their raid, in slot order.
+  const byRaid = new Map();
+  for (const p of polarityParties) {
+    const list = byRaid.get(p.raidId);
+    if (list) list.push(p);
+    else byRaid.set(p.raidId, [p]);
+  }
+  for (const list of byRaid.values()) {
+    list.sort((a, b) => (a.position || 0) - (b.position || 0));
+  }
+
+  // computeLeaderSet() takes raid groups shaped { leaderId, partyIds } — a
+  // polarity party points UP at its raid instead, so derive the same shape.
+  const shimmed = polarityRaids.map(r => ({
+    leaderId: r.leaderId,
+    partyIds: (byRaid.get(r.raidId) || []).map(p => p.partyId),
+  }));
+  gctx.leaderSet = computeLeaderSet(shimmed, partyMap);
+
+  const guildLabel = guild === 'mummy' ? 'Mummy' : 'Daddy';
+  const ordered = polarityRaids
+    .slice()
+    .sort((a, b) => (a.position || 0) - (b.position || 0));
+
+  const out = [];
+  for (const raid of ordered) {
+    const pooled = (byRaid.get(raid.raidId) || []).filter(p => !isEmptyParty(p));
+    if (!pooled.length) continue; // skip an untouched raid entirely
+
+    const kind = raid.kind === 'normal' ? 'normal' : 'main';
+    const raidName = raid.name || raid.raidId;
+    const headcount = pooled.reduce((s, p) => s + (p.memberIds || []).length, 0);
+    const title = `${guildLabel} · ${raidName}${kind === 'main' ? ' (top power)' : ''} — ${headcount} member${headcount === 1 ? '' : 's'}`;
+
+    out.push({
+      raidId: raid.raidId,
+      kind,
+      name: raidName,
+      title: raidName,
+      headcount,
+      filename: `polarity-${guild}-${slug(raidName)}.png`,
+      buffer: renderSectionImage(title, layoutSection(pooled), gctx),
+    });
+  }
+  return out;
+}
+
 module.exports = {
   buildRaidImages,
+  buildPolarityImages,
   renderSectionImage,
   layoutSection,
   buildContext,
