@@ -8,17 +8,19 @@ const { buildPolarityImages } = require('../roster/render');
 // the GvG Main/Sub fields shown by /guildroster.
 //
 // Structure per guild: 2 main raids (top power, 5 parties each) + 4 normal
-// raids (8 parties each). ONE IMAGE PER NON-EMPTY RAID, posted as its own
-// message so Discord doesn't gallery-group them — same pattern /guildroster
-// uses for its two field images, and the same visual language (class role
-// badges, party cards, gold crown for the raid leader).
+// raids (8 parties each). EXACTLY TWO IMAGES per run — one pooling every main
+// raid, one pooling every normal raid — each posted as its own message so
+// Discord doesn't gallery-group them. This mirrors /guildroster's two field
+// images and shares the same visual language (class role badges, party cards,
+// gold crown for the raid leader). Because party names repeat across raids,
+// each pooled card carries its raid name as an eyebrow above the party title.
 //
 // Daddy and Mummy are SEPARATE guilds and are never combined in one run.
 // Everything read here is READ-ONLY — the polarity collections are web-owned.
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('polarityraid')
-    .setDescription('Show a guild\'s Polarity Raid layout — one image per raid.')
+    .setDescription('Show a guild\'s Polarity Raid layout — main raids and normal raids.')
     .addStringOption(option =>
       option
         .setName('guild')
@@ -64,7 +66,8 @@ module.exports = {
         return;
       }
 
-      // One message per raid image, labelled "**<Guild> · <Raid name>**".
+      // One message per image (Main Raids, then Normal Raids), labelled
+      // "**<Guild> · <section>**".
       for (let i = 0; i < sections.length; i++) {
         const sec = sections[i];
         const payload = {

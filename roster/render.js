@@ -101,6 +101,9 @@ const COL = {
   leader:      '#fbbf24', // amber-400 — raid-leader crown, tag, highlighted name
   leaderRowBg: 'rgba(251,191,36,0.14)', // subtle gold wash behind the leader row
   leaderTagFg: '#1f1300', // dark text sitting on the gold "Leader" tag pill
+  raidLabel:   '#c7d2fe', // indigo-200 — the raid "eyebrow" on a POOLED card.
+                          // Deliberately light enough to stay readable on BOTH
+                          // the indigo card and the deep-rose "missing" card.
 };
 
 const MAX_BYTES = 8 * 1024 * 1024; // 8MB Discord attachment cap
@@ -108,7 +111,8 @@ const MAX_HEIGHT = 12000;          // pathological-height guard (won't trigger o
 
 // Layout constants.
 const WIDTH = 1920;                // HARD constraint — every image is exactly this wide.
-const MAX_ROWS = 2;                // parties fill at most 2 rows.
+const MAX_ROWS = 2;                // DEFAULT row cap (/guildroster). Per-call overridable.
+const MAX_POOL_ROWS = 12;          // upper bound when a row count is derived (see fitRows).
 const MARGIN = 20;
 const SECTION_IMG_HEADER_H = 52;   // per-image header band height.
 const EMPTY_NOTE_H = 34;           // height reserved for an "(no parties yet)" note.
@@ -124,6 +128,10 @@ const TITLE_H = 26;
 const MISSING_H = 20;
 const ROW_H = 24;
 const BADGE = 16;
+// Extra card height reserved for the raid "eyebrow" line drawn above the party
+// title when cards from DIFFERENT raids are pooled into one image (see
+// buildPolarityImages). Zero for /guildroster, which pools a single field.
+const RAID_LABEL_H = 16;
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests / simulation)
@@ -284,6 +292,23 @@ function drawCard(ctx, x, y, w, h, party, gctx) {
   const innerW = w - CARD_PAD * 2;
   let cy = y + CARD_PAD;
 
+  // Raid "eyebrow". Only when gctx carries a raidLabels map — i.e. this image
+  // pools cards from MORE than one raid, so "Party 1" alone is ambiguous (every
+  // raid has its own Party 1). The space is reserved for EVERY card in such an
+  // image (even one whose label is missing) so all cards stay the same height,
+  // matching the RAID_LABEL_H that layoutSection() measured with.
+  if (gctx.raidLabels) {
+    const label = gctx.raidLabels.get(party.partyId);
+    if (label) {
+      ctx.font = fBold(11);
+      ctx.fillStyle = COL.raidLabel;
+      ctx.textBaseline = 'top';
+      ctx.textAlign = 'left';
+      ctx.fillText(truncToWidth(ctx, String(label).toUpperCase(), innerW), innerX, cy);
+    }
+    cy += RAID_LABEL_H;
+  }
+
   const leaderSet = gctx.leaderSet || EMPTY_SET;
   // Does this party contain the (validated) leader of its raid group?
   const partyHasLeader = (party.memberIds || []).some((id) => leaderSet.has(id));
@@ -385,24 +410,49 @@ function drawCard(ctx, x, y, w, h, party, gctx) {
 }
 
 // ---------------------------------------------------------------------------
-// Flat-field layout — pools ALL of a field's non-empty parties into a single
-// grid. "Max 2 rows" is a CAP, not a target: small counts stay a SINGLE row of
-// natural-width (IDEAL_CARD_W) cards, LEFT-ALIGNED, wrapping to a 2nd row only
-// when they exceed one row's worth of ideal columns. Only when >colsPerRow
-// columns are forced (many parties) do cards shrink-to-fill down to MIN_CARD_W.
+// Flat layout — pools ALL of the given non-empty parties into a single grid.
+// The row cap is a CAP, not a target: small counts stay a SINGLE row of
+// natural-width (IDEAL_CARD_W) cards, LEFT-ALIGNED, wrapping only when they
+// exceed one row's worth of ideal columns. Only when >colsPerRow columns are
+// forced (many parties) do cards shrink-to-fill down to MIN_CARD_W.
 //   { rows:[{cells:[{p,h}], h}], gridH, cardW, cols, isEmpty }
 // The measure pass and the draw pass both consume this so they agree.
+//
+// `maxRows` DEFAULTS TO MAX_ROWS (2) so /guildroster's output is unchanged; the
+// pooled polarity images pass a derived, larger cap (see fitRows). `extraCardH`
+// is added to every card's measured height — used to reserve RAID_LABEL_H for
+// the raid eyebrow when cards from multiple raids share one image.
 // ---------------------------------------------------------------------------
-function layoutSection(parties) {
+// Largest column count whose shrink-to-fill card width still clears the
+// MIN_CARD_W legibility floor inside WIDTH. Derived, not hardcoded, so it tracks
+// any future change to WIDTH / MARGIN / CARD_GAP / MIN_CARD_W.
+//   (1880 + 16) / (180 + 16) = 9.67 → 9 columns.
+function maxLegibleCols() {
+  const usable = WIDTH - MARGIN * 2;
+  return Math.max(1, Math.floor((usable + CARD_GAP) / (MIN_CARD_W + CARD_GAP)));
+}
+
+// Smallest row count that keeps `n` cards above MIN_CARD_W — i.e. the flattest
+// grid that is still readable. Used by the POOLED polarity images so the layout
+// re-derives itself if Conrad changes partySize or the raid structure, instead
+// of a hardcoded row count. Capped at MAX_POOL_ROWS as a sanity bound.
+function fitRows(n, cap = MAX_POOL_ROWS) {
+  if (!n || n < 1) return 1;
+  const rows = Math.ceil(n / maxLegibleCols());
+  return Math.min(Math.max(1, rows), Math.max(1, cap));
+}
+
+function layoutSection(parties, maxRows = MAX_ROWS, extraCardH = 0) {
   if (!parties.length) {
     return { rows: [], gridH: EMPTY_NOTE_H, cardW: WIDTH - MARGIN * 2, cols: 0, isEmpty: true };
   }
 
   const n = parties.length;
   const usable = WIDTH - MARGIN * 2;
+  const rowCap = Math.max(1, Math.floor(maxRows) || 1);
   // How many natural-width cards fit in one row.
   const colsPerRow = Math.max(1, Math.floor((usable + CARD_GAP) / (IDEAL_CARD_W + CARD_GAP)));
-  const rowCount = n <= colsPerRow ? 1 : MAX_ROWS; // single row until it overflows, capped at 2.
+  const rowCount = n <= colsPerRow ? 1 : rowCap; // single row until it overflows, then capped.
   const cols = Math.ceil(n / rowCount);
   // Keep the natural width (left-aligned, leftover space is fine) until we need
   // more columns than fit at IDEAL width — then shrink-to-fill within 1920.
@@ -410,7 +460,7 @@ function layoutSection(parties) {
     ? IDEAL_CARD_W
     : Math.max(MIN_CARD_W, (usable - (cols - 1) * CARD_GAP) / cols);
 
-  const heights = parties.map(cardHeight);
+  const heights = parties.map(p => cardHeight(p) + extraCardH);
   const rows = [];
   for (let i = 0; i < n; i += cols) {
     const slice = parties.slice(i, i + cols).map((p, j) => ({ p, h: heights[i + j] }));
@@ -418,11 +468,6 @@ function layoutSection(parties) {
   }
   const gridH = rows.reduce((sum, r) => sum + r.h, 0) + (rows.length - 1) * CARD_GAP;
   return { rows, gridH, cardW, cols, isEmpty: false };
-}
-
-// Filename-safe slug from a title.
-function slug(s) {
-  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'group';
 }
 
 // ---------------------------------------------------------------------------
@@ -536,25 +581,40 @@ function buildRaidImages(guild, data) {
 }
 
 // ---------------------------------------------------------------------------
-// POLARITY RAIDS — one image PER RAID for a guild's second, independent raid
-// layout (web-owned `polarityRaids` / `polarityParties`; nothing to do with the
-// GvG main/sub fields).
+// POLARITY RAIDS — EXACTLY TWO images per run, mirroring /guildroster's two
+// field images: [Main Raids, Normal Raids] in that order. This is the guild's
+// second, independent raid layout (web-owned `polarityRaids` /
+// `polarityParties`; nothing to do with the GvG main/sub fields).
 //
 // Structure per guild: 2 main raids x 5 parties + 4 normal raids x 8 parties.
-// ONE IMAGE PER RAID rather than a pooled field image, because the shared
-// layoutSection() caps a picture at 2 rows: 5 parties fit one row and 8 fit two
-// at the natural 360px card width, but pooling all 4 normal raids (32 parties)
-// would need 16 columns and force cards below the MIN_CARD_W legibility floor.
-// Per-raid images keep every card readable and keep the raid name in the band.
+// Each image POOLS every non-empty party of that KIND into ONE flat grid, in
+// raid position order, each raid's parties in slot order.
 //
-// Visual language is IDENTICAL to /guildroster — same palette, same card,
-// same drawn role badges, same rose-red "missing required class" card, same
-// gold crown/tag/row-wash for a raid leader — because it reuses drawCard(),
+// ROW COUNT IS DERIVED, NOT HARDCODED. layoutSection()'s row cap is a per-call
+// parameter now; fitRows() picks the flattest grid whose card width still
+// clears MIN_CARD_W, so the layout survives a change to partySize or to the
+// raid structure. On today's data: 10 main parties → 2 rows x 5 cols at the
+// natural 360px; 32 normal parties → 4 rows x 8 cols at ~221px. Both fit the
+// hard 1920 width — the picture grows TALLER, not wider.
+//
+// RAID ATTRIBUTION: party names repeat across raids (every raid has its own
+// "Party 1".."Party 8"), so a pooled card carries a raid "eyebrow" — the raid
+// name in small indigo caps directly above the party title, via gctx.raidLabels
+// + the RAID_LABEL_H that layoutSection() reserves. /guildroster sets no
+// raidLabels, so its cards are byte-identical to before.
+//
+// Visual language is otherwise IDENTICAL to /guildroster — same palette, same
+// card, same drawn role badges, same rose-red "missing required class" card,
+// same gold crown/tag/row-wash for a raid leader — because it reuses drawCard(),
 // layoutSection(), renderSectionImage() and computeLeaderSet() verbatim.
 //
-// Raids with no non-empty party are SKIPPED (an all-empty board returns [], and
-// the command replies with a text notice instead of six blank pictures).
-// Returns [{ raidId, kind, title, filename, buffer }, ...] in raid order.
+// EMPTY RAIDS: a raid with no non-empty party contributes nothing to its pool
+// (no wall of blank cards for a small guild). If a whole KIND ends up empty it
+// still renders its empty-state image, so a run is always 2 images — same rule
+// /guildroster uses for an empty field. Only when the ENTIRE board is empty do
+// we return [], preserving the command's "not set up yet" text reply.
+//
+// Returns [{ kind, title, filename, buffer, raidCount, partyCount, headcount }].
 // ---------------------------------------------------------------------------
 function buildPolarityImages(guild, data) {
   const { polarityRaids = [], polarityParties = [] } = data;
@@ -585,27 +645,55 @@ function buildPolarityImages(guild, data) {
     .slice()
     .sort((a, b) => (a.position || 0) - (b.position || 0));
 
-  const out = [];
+  // Pool by KIND. A wholly-empty raid contributes nothing at all, and each
+  // pooled party remembers which raid it came from for the card eyebrow.
+  const pools = {
+    main:   { parties: [], raids: 0 },
+    normal: { parties: [], raids: 0 },
+  };
+  const raidLabels = new Map();
+
   for (const raid of ordered) {
-    const pooled = (byRaid.get(raid.raidId) || []).filter(p => !isEmptyParty(p));
-    if (!pooled.length) continue; // skip an untouched raid entirely
-
     const kind = raid.kind === 'normal' ? 'normal' : 'main';
+    const live = (byRaid.get(raid.raidId) || []).filter(p => !isEmptyParty(p));
+    if (!live.length) continue; // skip an untouched raid entirely
     const raidName = raid.name || raid.raidId;
-    const headcount = pooled.reduce((s, p) => s + (p.memberIds || []).length, 0);
-    const title = `${guildLabel} · ${raidName}${kind === 'main' ? ' (top power)' : ''} — ${headcount} member${headcount === 1 ? '' : 's'}`;
-
-    out.push({
-      raidId: raid.raidId,
-      kind,
-      name: raidName,
-      title: raidName,
-      headcount,
-      filename: `polarity-${guild}-${slug(raidName)}.png`,
-      buffer: renderSectionImage(title, layoutSection(pooled), gctx),
-    });
+    for (const p of live) raidLabels.set(p.partyId, raidName);
+    pools[kind].parties.push(...live);
+    pools[kind].raids += 1;
   }
-  return out;
+
+  // Entire board untouched → no images; the command replies with a text notice.
+  if (!pools.main.parties.length && !pools.normal.parties.length) return [];
+
+  // Presence of this map is what switches the raid eyebrow on (and what makes
+  // RAID_LABEL_H reserved space real). /guildroster never sets it.
+  gctx.raidLabels = raidLabels;
+
+  const KINDS = [
+    { kind: 'main',   label: 'Main Raids (top power)' },
+    { kind: 'normal', label: 'Normal Raids' },
+  ];
+
+  return KINDS.map(({ kind, label }) => {
+    const pooled = pools[kind].parties;
+    const headcount = pooled.reduce((s, p) => s + (p.memberIds || []).length, 0);
+    const raidCount = pools[kind].raids;
+    const band = pooled.length
+      ? `${guildLabel} · ${label} — ${raidCount} raid${raidCount === 1 ? '' : 's'} · ${pooled.length} part${pooled.length === 1 ? 'y' : 'ies'} · ${headcount} member${headcount === 1 ? '' : 's'}`
+      : `${guildLabel} · ${label}`;
+    const layout = layoutSection(pooled, fitRows(pooled.length), RAID_LABEL_H);
+
+    return {
+      kind,
+      title: label,
+      raidCount,
+      partyCount: pooled.length,
+      headcount,
+      filename: `polarity-${guild}-${kind}.png`,
+      buffer: renderSectionImage(band, layout, gctx),
+    };
+  });
 }
 
 module.exports = {
@@ -613,6 +701,8 @@ module.exports = {
   buildPolarityImages,
   renderSectionImage,
   layoutSection,
+  fitRows,
+  maxLegibleCols,
   buildContext,
   // pure helpers (tests / sim)
   classToRole,
@@ -629,4 +719,10 @@ module.exports = {
   MAX_BYTES,
   WIDTH,
   MAX_ROWS,
+  MAX_POOL_ROWS,
+  MIN_CARD_W,
+  IDEAL_CARD_W,
+  CARD_GAP,
+  MARGIN,
+  RAID_LABEL_H,
 };
