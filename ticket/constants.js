@@ -109,23 +109,47 @@ const COLORS = {
 
 const PANEL_TITLE = 'Guild Support';
 
+// The transcript notice appears BOTH here and on the in-channel sticky, and
+// that repetition is deliberate. The sticky only appears once an officer has
+// accepted — by then the member has already written their subject and message.
+// If the point of the notice is that people know BEFORE they share, it has to
+// be on the panel, where they see it before opening a ticket at all. The sticky
+// is then the reminder, not the disclosure.
 const PANEL_DESCRIPTION =
   'Need help with something? Click **Open Ticket** below and tell us what\'s going on.\n\n' +
   'You\'ll be asked for:\n\n' +
   '**Subject** — a short summary of what this is about\n' +
   '**Message** — the details: what happened, when, and what you need\n\n' +
   'Once an officer picks it up, a **private channel** is created that only you and the ' +
-  'officers can see. Everything stays between you and the officer team.\n\n' +
+  'officer team can see.\n\n' +
+  '🔒 **Before you write:** when your ticket is resolved, a **full transcript of that ' +
+  'channel is automatically saved** to the officer archive — every message, and the names ' +
+  'of any files shared. It is kept so decisions can be looked up later, and it stays ' +
+  'visible to the officer team only. Please keep that in mind before sharing anything ' +
+  'sensitive.\n\n' +
   'You can have one open ticket at a time. Please be patient — someone will get to you.';
 
 const PANEL_BUTTON_LABEL = 'Open Ticket';
 
 // The sticky that sits at the bottom of every open ticket channel.
+//
+// The transcript notice is deliberately explicit and separated onto its own
+// line. It was already implied by the old wording ("saved to the transcript
+// archive"), but a member skim-reading would not register that EVERYTHING they
+// type here — including anything personal they volunteer — gets archived to a
+// channel they cannot see. Stating it plainly is the point: people should know
+// before they share, not find out afterwards.
+//
+// This sticky is reposted on every message, so it stays deliberately short.
 const STICKY_TEXT =
   '📌 **This ticket is open.**\n' +
   'An officer will work through it with you here. When everything has been sorted, ' +
-  'an officer clicks **Mark as Resolved** below — the conversation is saved to the ' +
-  'transcript archive and this channel is closed.';
+  'an officer clicks **Mark as Resolved** below and this channel is closed.\n\n' +
+  '🔒 **Please note:** when this ticket is resolved, a **full transcript of this ' +
+  'channel is automatically saved** to the officer archive — every message, and the ' +
+  'names of any files shared. It is kept so decisions can be looked up later, and it ' +
+  'is visible to the officer team only. Please keep that in mind before sharing ' +
+  'anything sensitive here.';
 
 const STICKY_BUTTON_LABEL = 'Mark as Resolved';
 
