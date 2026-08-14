@@ -3,6 +3,7 @@ const db = require('../kudos/db');
 const activitySticky = require('../activitycampaign/sticky');
 const gvgReminder = require('../gvg/reminder');
 const quizEngine = require('../monsterquiz/engine');
+const ticketSticky = require('../ticket/sticky');
 const { logEvent } = require('../auditlog/logger');
 const { COLORS } = require('../auditlog/constants');
 
@@ -68,6 +69,15 @@ module.exports = {
       quizEngine.onMessage(message);
     } catch (err) {
       console.warn('[monsterquiz] onMessage failed (kudos unaffected):', err?.message || err);
+    }
+
+    // Ticket sticky bump — ADDITIVE, same fire-and-forget contract. One Map
+    // lookup keyed by channel id, so it is free for every message that isn't
+    // in an open ticket channel. Never throws into (or blocks) kudos below.
+    try {
+      ticketSticky.onMessage(message);
+    } catch (err) {
+      console.warn('[ticket] Sticky trigger failed (kudos unaffected):', err?.message || err);
     }
 
     if (typeof message.content !== 'string') return;

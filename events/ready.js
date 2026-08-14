@@ -16,6 +16,9 @@ const gvgReminder = require('../gvg/reminder');
 const reactionRoleDb = require('../reactionrole/db');
 const partyfinderDb = require('../partyfinder/db');
 const partyfinderResume = require('../partyfinder/resume');
+const ticketDb = require('../ticket/db');
+const ticketSticky = require('../ticket/sticky');
+const ticketSweeper = require('../ticket/sweeper');
 
 module.exports = {
   name: Events.ClientReady,
@@ -230,6 +233,35 @@ module.exports = {
       }
     } catch (err) {
       console.warn('[ready] Party-finder persistence init failed (feature still works in-memory, bot still online):', err?.message || err);
+    }
+
+    // Support Tickets: connect to MongoDB for the /guildsupport ticket flow.
+    // Same Atlas cluster; own client. After a successful connect:
+    //   (1) resume() rebuilds the sticky watch Map from every accepted ticket —
+    //       the Map is a CACHE, so this is the only thing standing between a
+    //       restart and a dead Mark-as-Resolved button. It also reconciles
+    //       tickets whose channel vanished during downtime (marked orphaned,
+    //       not retried forever).
+    //   (2) the sweeper starts, deleting resolved channels whose 24h grace has
+    //       elapsed. Deadlines live in Mongo, so downtime delays a deletion
+    //       rather than losing it — and that is what keeps the ticket category
+    //       under Discord's 50-child cap.
+    // Degrades gracefully — no MONGODB_URI or Atlas unreachable means
+    // /guildsupport and Open Ticket reply "unavailable" and the bot boots
+    // fully. initSchema()/resume()/start() never throw to the boot path.
+    try {
+      const ok = await ticketDb.initSchema();
+      if (ok) {
+        console.log('[ready] Ticket store ready (MongoDB).');
+        await ticketSticky.resume(client);
+        ticketSweeper.start(client);
+      } else if (process.env.MONGODB_URI) {
+        console.warn('[ready] Ticket system disabled — could not connect to MongoDB (check Atlas Network Access / URI).');
+      } else {
+        console.warn('[ready] Ticket system disabled — MONGODB_URI not set.');
+      }
+    } catch (err) {
+      console.warn('[ready] Ticket init failed (tickets degraded, bot still online):', err?.message || err);
     }
   },
 };

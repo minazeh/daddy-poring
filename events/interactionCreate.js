@@ -6,6 +6,7 @@ const quiz = require('../quiz/handlers');
 const activitycampaign = require('../activitycampaign/handlers');
 const gvgReminder = require('../gvg/reminder');
 const monsterquiz = require('../monsterquiz/engine');
+const ticket = require('../ticket/handlers');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -81,6 +82,14 @@ module.exports = {
         // Routed before the guild-app router so its customIds are claimed first.
         const officerHandled = await officerapp.route(interaction);
         if (officerHandled) return;
+
+        // Support tickets: ticket:open, ticket:modal, ticket:accept|decline|
+        // resolve:<ticketId>, ticket:declinemodal:<ticketId>. route() claims
+        // only the `ticket:` namespace, which nothing else uses. Every id but
+        // the panel button carries the ticket id, so these stay actionable
+        // across restarts with no in-memory state.
+        const ticketHandled = await ticket.route(interaction);
+        if (ticketHandled) return;
 
         const handled = await guildapp.route(interaction);
         if (handled) return;
