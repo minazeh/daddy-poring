@@ -115,18 +115,27 @@ const PANEL_TITLE = 'Guild Support';
 // If the point of the notice is that people know BEFORE they share, it has to
 // be on the panel, where they see it before opening a ticket at all. The sticky
 // is then the reminder, not the disclosure.
+// Copy is Conrad's, supplied verbatim 2026-08-15. He pasted it as plain text
+// (markdown does not survive a copy out of a rendered embed), so the ** bold
+// markers are re-applied to the same elements the previous version emphasised —
+// wording is untouched.
 const PANEL_DESCRIPTION =
-  'Need help with something? Click **Open Ticket** below and tell us what\'s going on.\n\n' +
+  'Need help, have a concern, want to make a report, or share a suggestion? ' +
+  'Click **Open Ticket** below and let us know what\'s going on.\n\n' +
   'You\'ll be asked for:\n\n' +
-  '**Subject** — a short summary of what this is about\n' +
-  '**Message** — the details: what happened, when, and what you need\n\n' +
+  '**Subject** — Please prefix your topic with your category, followed by a short summary ' +
+  '(e.g., `[Question] How do I rank up?` or `[Suggestion] New event idea`)\n\n' +
+  '**Message** — The details: what happened, when, and what you need\n\n' +
   'Once an officer picks it up, a **private channel** is created that only you and the ' +
   'officer team can see.\n\n' +
-  '🔒 **Before you write:** when your ticket is resolved, a **full transcript of that ' +
-  'channel is automatically saved** to the officer archive — every message, and the names ' +
-  'of any files shared. It is kept so decisions can be looked up later, and it stays ' +
-  'visible to the officer team only. Please keep that in mind before sharing anything ' +
-  'sensitive.\n\n' +
+  '🔒 **Privacy & Transcript Notice:**\n' +
+  'When your ticket is resolved, a **full transcript of that channel is automatically saved** ' +
+  'to the officer archive — including every message and the names of any files shared. ' +
+  'This archive is kept strictly visible to the officer team only to review past decisions ' +
+  'and maintain accountability.\n\n' +
+  '**Please protect your privacy:** Do not share sensitive personal information (such as ' +
+  'real names, passwords, phone numbers, or financial details) unless it is strictly ' +
+  'necessary for a security report.\n\n' +
   'You can have one open ticket at a time. Please be patient — someone will get to you.';
 
 const PANEL_BUTTON_LABEL = 'Open Ticket';
