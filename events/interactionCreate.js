@@ -7,6 +7,7 @@ const activitycampaign = require('../activitycampaign/handlers');
 const gvgReminder = require('../gvg/reminder');
 const monsterquiz = require('../monsterquiz/engine');
 const ticket = require('../ticket/handlers');
+const petition = require('../petition/handlers');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -90,6 +91,12 @@ module.exports = {
         // across restarts with no in-memory state.
         const ticketHandled = await ticket.route(interaction);
         if (ticketHandled) return;
+
+        // Petition: petition:sign, petition:modal. Both static customIds,
+        // unique namespace, no state behind them — a posted panel works
+        // forever across restarts.
+        const petitionHandled = await petition.route(interaction);
+        if (petitionHandled) return;
 
         const handled = await guildapp.route(interaction);
         if (handled) return;
