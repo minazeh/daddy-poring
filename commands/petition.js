@@ -23,8 +23,7 @@ const {
   COLORS,
   PANEL_TITLE,
   PANEL_BUTTON_LABEL,
-  panelDescription,
-  hasUnfilledFormLink,
+  PANEL_BODY,
 } = require('../petition/constants');
 
 function isGodfather(interaction) {
@@ -49,7 +48,7 @@ module.exports = {
 
     const embed = new EmbedBuilder()
       .setTitle(PANEL_TITLE)
-      .setDescription(panelDescription())
+      .setDescription(PANEL_BODY)
       .setColor(COLORS.PANEL);
 
     const row = new ActionRowBuilder().addComponents(
@@ -60,19 +59,5 @@ module.exports = {
     );
 
     await interaction.reply({ embeds: [embed], components: [row] });
-
-    // The form URL was never supplied, so the body still reads "(paste link)".
-    // Say so straight after posting rather than letting it go out unnoticed —
-    // this is a one-shot announcement and a dead placeholder in it is
-    // embarrassing in a way a normal bug is not.
-    if (hasUnfilledFormLink()) {
-      await interaction.followUp({
-        content:
-          '⚠️ Heads up: the panel still says **"Form is here (paste link)"** — no form URL was ' +
-          'set. Set `FORM_URL` in `petition/constants.js`, redeploy, then delete this panel and ' +
-          're-run `/petition`.',
-        flags: MessageFlags.Ephemeral,
-      });
-    }
   },
 };

@@ -37,15 +37,14 @@ const COLORS = {
 };
 
 // ---------------------------------------------------------------------------
-// Copy. Conrad's, supplied verbatim 2026-08-16.
-//
-// ⚠️ PLACEHOLDER — Conrad's text contains the literal "(paste link)". The form
-// URL was not supplied. Set FORM_URL below and it is substituted into the body;
-// leave it null and the line renders exactly as he wrote it, placeholder and
-// all, rather than silently dropping the sentence.
+// Copy. Conrad's, supplied verbatim 2026-08-16, with ONE line rewritten at his
+// request (2026-08-16): the original said "Form is here (paste link), takes 1
+// minute, 2 questions, or DM me your message if you prefer." There is no
+// external form — the button below collects the same two answers — so that
+// line now points at the button instead. His sentence rhythm and the "2
+// questions / or DM me" ending are kept deliberately; only the mechanism
+// changed, so the paragraph still reads in his voice.
 // ---------------------------------------------------------------------------
-
-const FORM_URL = null;   // e.g. 'https://forms.gle/xxxxxxxx'
 
 const PANEL_TITLE = '[PETITION FOR SOLAR — GUILD EMERGENCY]';
 
@@ -82,27 +81,14 @@ const PANEL_BODY = [
   'We\'ll compile it all into one big "please come back, we miss you (and also nothing works ' +
   'without you)" package and deliver it to him.',
   '',
-  '__FORM_LINE__',
+  'Just hit **Sign the Petition** below, takes 1 minute, 2 questions, ' +
+  'or DM me your message if you prefer.',
   '',
   "It's a game, and games should be fun. Solar made ours more fun. Let's return the favour?",
   '',
   'Yours sincerely,',
   'All the Godfathers.',
 ].join('\n');
-
-// Substitute the form line depending on whether a URL has been supplied.
-function panelDescription() {
-  const formLine = FORM_URL
-    ? `Form is here: ${FORM_URL} — takes 1 minute, 2 questions, or DM me your message if you prefer.`
-    : 'Form is here (paste link), takes 1 minute, 2 questions, or DM me your message if you prefer.';
-  return PANEL_BODY.replace('__FORM_LINE__', formLine);
-}
-
-// Whether the panel still carries the unfilled placeholder — used to warn the
-// poster rather than let it go out unnoticed.
-function hasUnfilledFormLink() {
-  return !FORM_URL;
-}
 
 module.exports = {
   IDS,
@@ -112,10 +98,7 @@ module.exports = {
   SUBJECT_MAX,
   MESSAGE_MAX,
   COLORS,
-  FORM_URL,
   PANEL_TITLE,
   PANEL_BUTTON_LABEL,
   PANEL_BODY,
-  panelDescription,
-  hasUnfilledFormLink,
 };
