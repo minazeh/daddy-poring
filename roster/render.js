@@ -470,6 +470,25 @@ function layoutSection(parties, maxRows = MAX_ROWS, extraCardH = 0) {
   return { rows, gridH, cardW, cols, isEmpty: false };
 }
 
+// A WIDTH-wide single-line notice image: the page, the header band, and one
+// muted line. Used as the graceful degrade when a rendered image blows past the
+// MAX_BYTES attachment cap — posting a notice beats posting an attachment
+// Discord will reject. Extracted so every renderer degrades identically.
+function renderNoticeImage(bandTitle, note) {
+  const top = SECTION_IMG_HEADER_H + MARGIN;
+  const nh = top + EMPTY_NOTE_H + MARGIN;
+  const canvas = createCanvas(WIDTH, nh);
+  const ctx = canvas.getContext('2d');
+  paintPage(ctx, WIDTH, nh);
+  drawBand(ctx, 0, WIDTH, SECTION_IMG_HEADER_H, bandTitle, 22, COL.headerBand);
+  ctx.fillStyle = COL.muted;
+  ctx.font = fReg(15);
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  ctx.fillText(note, MARGIN, top + 4);
+  return canvas.toBuffer('image/png');
+}
+
 // ---------------------------------------------------------------------------
 // Render ONE field (pooled flat grid) to a PNG Buffer at WIDTH × content-height.
 // `layout` comes from layoutSection(); `bandTitle` is drawn in the header band.
@@ -512,17 +531,7 @@ function renderSectionImage(bandTitle, layout, gctx) {
   // (rejected) attachment or crash.
   if (buffer.length > MAX_BYTES) {
     console.warn(`[roster/render] "${bandTitle}" exceeded ${MAX_BYTES} bytes (${buffer.length}) — degrading to notice.`);
-    const nh = gridTop + EMPTY_NOTE_H + MARGIN;
-    const c2 = createCanvas(WIDTH, nh);
-    const x2 = c2.getContext('2d');
-    paintPage(x2, WIDTH, nh);
-    drawBand(x2, 0, WIDTH, SECTION_IMG_HEADER_H, bandTitle, 22, COL.headerBand);
-    x2.fillStyle = COL.muted;
-    x2.font = fReg(15);
-    x2.textBaseline = 'top';
-    x2.textAlign = 'left';
-    x2.fillText('(too many parties to render in one image)', MARGIN, gridTop + 4);
-    buffer = c2.toBuffer('image/png');
+    buffer = renderNoticeImage(bandTitle, '(too many parties to render in one image)');
   }
 
   return buffer;
@@ -696,11 +705,312 @@ function buildPolarityImages(guild, data) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// SIEGE — ONE image per run, with a GROUP-AWARE layout.
+//
+// The siege layout is a THIRD, independent raid arrangement (web-owned
+// `siegeRaids` / `siegeParties`; nothing to do with the GvG main/sub fields or
+// the polarity board). Four raids per guild — Alpha, Bravo, Charlie, Delta Flex
+// — 8 parties each, and daddy/mummy are two entirely separate sieges.
+//
+// WHY A NEW LAYOUT FUNCTION. layoutSection() pools parties into one flat grid
+// with a UNIFORM column count (cols = ceil(n / rowCount)); it has no concept of
+// a group, so a row boundary lands wherever the arithmetic puts it. With four
+// FULL raids that coincidentally yields [8,8,8,8] — one raid per row — but the
+// moment one raid contributes fewer parties (and empty parties are hidden here,
+// see below) the pool stops dividing evenly and rows straddle two raids:
+// Alpha 7 / Bravo 8 / Charlie 8 / Delta 6 pools to [8,8,8,5], i.e. row 0 is
+// "Alpha + one Bravo card". Conrad's requirement is one raid per row band, so
+// the grouping has to be structural rather than arithmetic.
+//
+// layoutRaidGroups() therefore lays each raid out as its OWN block — a header
+// band plus that raid's own row(s) of cards — while keeping ONE card width
+// across the whole image (derived from the widest raid) so every card is the
+// same size no matter which raid it sits in. layoutSection() is untouched, so
+// /guildroster and /polarityraid render exactly as before.
+//
+// EMPTY PARTIES ARE HIDDEN (Conrad's call), the same rule the other two image
+// builders use. A raid with 6 filled parties draws 6 cards and its row is
+// visibly shorter than a full raid's — intended. A raid with NO filled parties
+// still gets its band, with a short "(no parties yet)" note, so all four raids
+// are always accounted for.
+//
+// The per-raid band carries the raid NAME, its party/member counts and its
+// LEADER, which is why siege cards need no raid "eyebrow" (gctx.raidLabels is
+// deliberately not set) — the band says it once for the whole row instead of
+// repeating it on every card at 221px.
+// ---------------------------------------------------------------------------
+const SIEGE_BAND_H = 38;     // per-raid header band inside the siege image
+const SIEGE_BAND_GAP = 10;   // raid band → its first row of cards
+const SIEGE_GROUP_GAP = 18;  // one raid block → the next
+const SIEGE_EMPTY_H = 26;    // the "(no parties yet)" line under an empty raid's band
+
+// A per-raid header band: raid name + counts on the left, leader on the right.
+// Full-bleed like drawBand() so the four raids read as four distinct strips.
+function drawRaidBand(ctx, y, w, h, name, meta, leaderName) {
+  ctx.fillStyle = COL.headerBand;
+  ctx.fillRect(0, y, w, h);
+  ctx.fillStyle = COL.accent;
+  ctx.fillRect(0, y + h - 2, w, 2);   // indigo underline
+  ctx.fillRect(0, y, 5, h);           // left accent tick
+
+  const mid = y + Math.round(h / 2);
+  ctx.textBaseline = 'middle';
+
+  // Right side first — the leader — so the raid name can then be truncated
+  // against whatever space is actually left.
+  let rightEdge = w - MARGIN;
+  if (leaderName) {
+    ctx.font = fBold(13);
+    const drawn = truncToWidth(ctx, `Leader: ${leaderName}`, Math.round(w * 0.35));
+    const textW = ctx.measureText(drawn).width;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = COL.leader;
+    ctx.fillText(drawn, rightEdge - textW, mid);
+    // Crown star just before the label.
+    drawStar(ctx, rightEdge - textW - 12, mid, 5, 6, 2.6, COL.leader);
+    rightEdge -= textW + 26;
+  }
+
+  ctx.textAlign = 'left';
+  ctx.font = fBold(18);
+  const avail = Math.max(40, rightEdge - MARGIN);
+  const nameStr = truncToWidth(ctx, name, avail);
+  ctx.fillStyle = COL.text;
+  ctx.fillText(nameStr, MARGIN, mid);
+
+  if (meta) {
+    const metaX = MARGIN + ctx.measureText(nameStr).width + 12;
+    ctx.font = fReg(12);
+    ctx.fillStyle = COL.muted;
+    ctx.fillText(truncToWidth(ctx, meta, Math.max(0, rightEdge - metaX)), metaX, mid);
+  }
+
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+}
+
+// ---------------------------------------------------------------------------
+// Group-aware layout. `groups` is an ORDERED [{ name, meta, leaderName,
+// parties }] — parties already filtered and sorted by the caller. Every group
+// gets its own block; a group with more parties than fit in one row wraps
+// within its OWN block and never bleeds into the next one.
+//   { blocks:[{ group, rows:[{cells:[{p,h}],h}], blockH }], cardW, cols, totalH }
+// The measure pass and the draw pass both consume this so they agree.
+// ---------------------------------------------------------------------------
+function layoutRaidGroups(groups) {
+  const usable = WIDTH - MARGIN * 2;
+  const colsPerRow = Math.max(1, Math.floor((usable + CARD_GAP) / (IDEAL_CARD_W + CARD_GAP)));
+
+  // ONE card width for the whole image, driven by the WIDEST raid so that no
+  // raid wraps before the others do and every card is the same size wherever it
+  // sits. Capped at the MIN_CARD_W legibility floor by maxLegibleCols().
+  const widest = groups.reduce((m, g) => Math.max(m, g.parties.length), 0);
+  const cols = Math.min(Math.max(1, widest), maxLegibleCols());
+  const cardW = cols <= colsPerRow
+    ? IDEAL_CARD_W
+    : Math.max(MIN_CARD_W, (usable - (cols - 1) * CARD_GAP) / cols);
+
+  const blocks = [];
+  let totalH = 0;
+  for (const g of groups) {
+    const rows = [];
+    for (let i = 0; i < g.parties.length; i += cols) {
+      const cells = g.parties.slice(i, i + cols).map(p => ({ p, h: cardHeight(p) }));
+      rows.push({ cells, h: Math.max(...cells.map(c => c.h)) });
+    }
+    const bodyH = rows.length
+      ? rows.reduce((s, r) => s + r.h, 0) + (rows.length - 1) * CARD_GAP
+      : SIEGE_EMPTY_H;
+    const blockH = SIEGE_BAND_H + SIEGE_BAND_GAP + bodyH;
+    blocks.push({ group: g, rows, blockH });
+    totalH += blockH;
+  }
+  if (blocks.length > 1) totalH += (blocks.length - 1) * SIEGE_GROUP_GAP;
+
+  return { blocks, cardW, cols, totalH, isEmpty: blocks.length === 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Render a grouped layout to a PNG Buffer at WIDTH × content-height: one image
+// header band, then one band + row(s) per group. Same page paint, same cards,
+// same 8MB degrade path as renderSectionImage().
+// ---------------------------------------------------------------------------
+function renderGroupedImage(bandTitle, layout, gctx) {
+  const top = SECTION_IMG_HEADER_H + MARGIN;
+  const bodyH = layout.isEmpty ? EMPTY_NOTE_H : layout.totalH;
+  const height = Math.min(MAX_HEIGHT, top + bodyH + MARGIN);
+
+  const canvas = createCanvas(WIDTH, height);
+  const ctx = canvas.getContext('2d');
+  paintPage(ctx, WIDTH, height);
+  drawBand(ctx, 0, WIDTH, SECTION_IMG_HEADER_H, bandTitle, 22, COL.headerBand);
+
+  let y = top;
+  if (layout.isEmpty) {
+    ctx.fillStyle = COL.muted;
+    ctx.font = fReg(15);
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    ctx.fillText('(no raids yet)', MARGIN, y + 4);
+  } else {
+    for (let b = 0; b < layout.blocks.length; b++) {
+      const block = layout.blocks[b];
+      const g = block.group;
+      drawRaidBand(ctx, y, WIDTH, SIEGE_BAND_H, g.name, g.meta, g.leaderName);
+      y += SIEGE_BAND_H + SIEGE_BAND_GAP;
+
+      if (!block.rows.length) {
+        ctx.fillStyle = COL.muted;
+        ctx.font = fReg(13);
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'left';
+        ctx.fillText('(no parties yet)', MARGIN, y + 2);
+        y += SIEGE_EMPTY_H;
+      } else {
+        for (let i = 0; i < block.rows.length; i++) {
+          const row = block.rows[i];
+          let x = MARGIN;
+          for (const cell of row.cells) {
+            drawCard(ctx, x, y, layout.cardW, cell.h, cell.p, gctx);
+            x += layout.cardW + CARD_GAP;
+          }
+          y += row.h;
+          if (i < block.rows.length - 1) y += CARD_GAP;
+        }
+      }
+      if (b < layout.blocks.length - 1) y += SIEGE_GROUP_GAP;
+    }
+  }
+
+  let buffer = canvas.toBuffer('image/png');
+  if (buffer.length > MAX_BYTES) {
+    console.warn(`[roster/render] "${bandTitle}" exceeded ${MAX_BYTES} bytes (${buffer.length}) — degrading to notice.`);
+    buffer = renderNoticeImage(bandTitle, '(too many parties to render in one image)');
+  }
+  return buffer;
+}
+
+// ---------------------------------------------------------------------------
+// Build the ONE siege image for a guild. Exactly one image — never an album.
+//
+// Order is the raid docs' `position` (Alpha, Bravo, Charlie, Delta Flex); each
+// raid's parties are drawn in slot order with the EMPTY ones dropped. Parties
+// whose raid doc is missing are not thrown away — they get a trailing block of
+// their own so nothing silently vanishes from the picture.
+//
+// Returns null when the siege has never been set up on the web app (no raid
+// docs AND no party docs) so the command can say so in text rather than post a
+// picture of nothing. Otherwise:
+//   { title, filename, buffer, raidCount, partyCount, headcount,
+//     raids:[{ name, leaderName, partyCount, headcount }] }
+// ---------------------------------------------------------------------------
+function buildSiegeImage(guild, data) {
+  const { siegeRaids = [], siegeParties = [] } = data;
+  if (!siegeRaids.length && !siegeParties.length) return null;
+
+  const gctx = buildContext(data);
+  const partyMap = new Map(siegeParties.map(p => [p.partyId, p]));
+
+  // Parties grouped by their raid, in slot order.
+  const byRaid = new Map();
+  for (const p of siegeParties) {
+    const list = byRaid.get(p.raidId);
+    if (list) list.push(p);
+    else byRaid.set(p.raidId, [p]);
+  }
+  for (const list of byRaid.values()) {
+    list.sort((a, b) => (a.position || 0) - (b.position || 0));
+  }
+
+  // computeLeaderSet() takes raid groups shaped { leaderId, partyIds } — a
+  // siege party points UP at its raid (the polarity model), so derive that
+  // shape. Same validation: a leaderId that isn't actually in one of its raid's
+  // parties is ignored rather than crowning a stale row.
+  const shimmed = siegeRaids.map(r => ({
+    leaderId: r.leaderId,
+    partyIds: (byRaid.get(r.raidId) || []).map(p => p.partyId),
+  }));
+  gctx.leaderSet = computeLeaderSet(shimmed, partyMap);
+
+  const ordered = siegeRaids.slice().sort((a, b) => (a.position || 0) - (b.position || 0));
+  const seen = new Set();
+  const groups = [];
+
+  for (const raid of ordered) {
+    seen.add(raid.raidId);
+    const own = byRaid.get(raid.raidId) || [];
+    const live = own.filter(p => !isEmptyParty(p));
+    const headcount = live.reduce((s, p) => s + (p.memberIds || []).length, 0);
+    // Name a leader on the band only if that userId is actually in one of THIS
+    // raid's parties. Checked against `own` rather than the global leaderSet:
+    // the set is guild-wide, so a stale leaderId that happens to be another
+    // raid's valid leader would otherwise be crowned on the wrong band.
+    const leaderId = typeof raid.leaderId === 'string' && raid.leaderId ? raid.leaderId : null;
+    const leaderOk = leaderId
+      ? own.some(p => (p.memberIds || []).includes(leaderId))
+      : false;
+    const leader = leaderOk ? gctx.memberMap.get(leaderId) : null;
+    groups.push({
+      name: raid.name || raid.raidId,
+      meta: live.length
+        ? `${live.length} part${live.length === 1 ? 'y' : 'ies'} · ${headcount} member${headcount === 1 ? '' : 's'}`
+        : 'empty',
+      leaderName: leaderOk ? ((leader && (leader.displayName || leader.username)) || leaderId) : null,
+      parties: live,
+      headcount,
+    });
+  }
+
+  // Orphans — parties whose raid doc is missing. Shouldn't happen (the web app
+  // seeds raids and parties together) but drawing them beats losing them.
+  for (const [raidId, list] of byRaid) {
+    if (seen.has(raidId)) continue;
+    const live = list.filter(p => !isEmptyParty(p));
+    if (!live.length) continue;
+    const headcount = live.reduce((s, p) => s + (p.memberIds || []).length, 0);
+    groups.push({
+      name: raidId,
+      meta: `${live.length} part${live.length === 1 ? 'y' : 'ies'} · ${headcount} member${headcount === 1 ? '' : 's'}`,
+      leaderName: null,
+      parties: live,
+      headcount,
+    });
+  }
+
+  const guildLabel = guild === 'mummy' ? 'Mummy' : 'Daddy';
+  const raidCount = groups.length;
+  const partyCount = groups.reduce((s, g) => s + g.parties.length, 0);
+  const headcount = groups.reduce((s, g) => s + g.headcount, 0);
+  const band = `${guildLabel} · Siege — ${raidCount} raid${raidCount === 1 ? '' : 's'} · ${partyCount} part${partyCount === 1 ? 'y' : 'ies'} · ${headcount} member${headcount === 1 ? '' : 's'}`;
+
+  return {
+    title: 'Siege',
+    raidCount,
+    partyCount,
+    headcount,
+    // Per-raid summary of what the bands say — the command doesn't need it, the
+    // sim harness asserts against it.
+    raids: groups.map(g => ({
+      name: g.name,
+      leaderName: g.leaderName,
+      partyCount: g.parties.length,
+      headcount: g.headcount,
+    })),
+    filename: `siege-${guild}.png`,
+    buffer: renderGroupedImage(band, layoutRaidGroups(groups), gctx),
+  };
+}
+
 module.exports = {
   buildRaidImages,
   buildPolarityImages,
+  buildSiegeImage,
   renderSectionImage,
+  renderGroupedImage,
+  renderNoticeImage,
   layoutSection,
+  layoutRaidGroups,
   fitRows,
   maxLegibleCols,
   buildContext,

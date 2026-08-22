@@ -35,6 +35,18 @@
 //     The POLARITY layout is a SECOND, independent raid arrangement owned by the
 //     web app (6 raids per guild: 2 main x 5 parties, 4 normal x 8). It shares
 //     nothing with `parties` / `raidGroups`. Read-only here, same as the rest.
+//
+//   siegeRaids   — { raidId:"${type}-siege-${raidKey}", type,
+//                    raidKey:"alpha"|"bravo"|"charlie"|"delta", name, position,
+//                    leaderId:string|null, updatedAt }
+//   siegeParties — { partyId:"${raidId}-p${position}", type, raidId, raidKey,
+//                    name, memberIds:string[], position, lockedSlots:number[],
+//                    updatedAt }
+//     The SIEGE layout is a THIRD, independent raid arrangement owned by the web
+//     app (4 raids per guild — Alpha, Bravo, Charlie, Delta Flex — 8 parties
+//     each). It shares nothing with `parties` / `raidGroups` / the polarity
+//     collections, and daddy/mummy are two entirely separate sieges. ONE leader
+//     per raid on the raid doc. Read-only here — the bot never writes these.
 // ---------------------------------------------------------------------------
 
 const { MongoClient } = require('mongodb');
@@ -136,6 +148,25 @@ async function getPolarityParties(guild) {
     .toArray();
 }
 
+// SIEGE raids where type === guild, sorted by position ascending (the web app
+// writes 0..3 for Alpha/Bravo/Charlie/Delta Flex, so this is already display
+// order). Read-only — the siege collections are web-owned.
+async function getSiegeRaids(guild) {
+  if (!isReady()) return [];
+  return db.collection('siegeRaids').find({ type: guild }).sort({ position: 1 }).toArray();
+}
+
+// SIEGE parties where type === guild, sorted by raid then slot position.
+// Read-only.
+async function getSiegeParties(guild) {
+  if (!isReady()) return [];
+  return db
+    .collection('siegeParties')
+    .find({ type: guild })
+    .sort({ raidId: 1, position: 1 })
+    .toArray();
+}
+
 // The single global settings doc, or null if none.
 async function getSettings() {
   if (!isReady()) return null;
@@ -179,6 +210,8 @@ module.exports = {
   getRaidGroups,
   getPolarityRaids,
   getPolarityParties,
+  getSiegeRaids,
+  getSiegeParties,
   getSettings,
   getMember,
   getMemberMeta,
