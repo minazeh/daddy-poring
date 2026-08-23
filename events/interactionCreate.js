@@ -2,6 +2,7 @@ const { Events } = require('discord.js');
 const guildapp = require('../guildapp/handlers');
 const officerapp = require('../officerapp/handlers');
 const partyfinder = require('../partyfinder/handlers');
+const carry = require('../carry/handlers');
 const quiz = require('../quiz/handlers');
 const activitycampaign = require('../activitycampaign/handlers');
 const gvgReminder = require('../gvg/reminder');
@@ -47,10 +48,23 @@ module.exports = {
       // it owned the interaction.
       // ----------------------------------------------------------------------
       if (interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) {
-        // Party Finder feature: partyfinder:start/carry entry buttons, pf:size
-        // select, pf:details/roles/carrydetails modals, and the pf:rolesopen/
-        // join/cancel/carryrespond/carrycancel buttons. Routed first so its
-        // customIds (and the only select-menu in the bot) are claimed.
+        // Carry sales (Final Mirage): carry:pick panel button, carry:tier /
+        // carry:run / carry:pay selects, the carry:ign modal, the carry:priest
+        // declaration button, and the officer carry:paid/release/cancel
+        // buttons. route() claims ONLY the `carry:` namespace and returns false
+        // for everything else, so it is safe ahead of the routers below.
+        // Routed first because it is the live sales flow; /partyfinder below is
+        // retired (its command is no longer registered) and its module is kept
+        // only so already-posted cards keep resolving.
+        const carryHandled = await carry.route(interaction);
+        if (carryHandled) return;
+
+        // Party Finder feature (RETIRED — /partyfinder is no longer registered;
+        // see lib/registerCommands.js. The module stays so any card posted
+        // before the retirement still resolves its buttons): partyfinder:start/
+        // carry entry buttons, pf:size select, pf:details/roles/carrydetails
+        // modals, and the pf:rolesopen/join/cancel/carryrespond/carrycancel
+        // buttons.
         const partyHandled = await partyfinder.route(interaction);
         if (partyHandled) return;
 

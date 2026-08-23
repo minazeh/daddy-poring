@@ -19,6 +19,8 @@ const partyfinderResume = require('../partyfinder/resume');
 const ticketDb = require('../ticket/db');
 const ticketSticky = require('../ticket/sticky');
 const ticketSweeper = require('../ticket/sweeper');
+const carryDb = require('../carry/db');
+const carryResume = require('../carry/resume');
 
 module.exports = {
   name: Events.ClientReady,
@@ -262,6 +264,39 @@ module.exports = {
       }
     } catch (err) {
       console.warn('[ready] Ticket init failed (tickets degraded, bot still online):', err?.message || err);
+    }
+
+    // Carry Sales (Final Mirage): connect to MongoDB for /carrypanel +
+    // /carryrun and the whole buyer flow. Same Atlas cluster; own client.
+    //
+    // THIS FEATURE HAS NO DEGRADED IN-MEMORY MODE, unlike Party Finder above.
+    // Mongo is AUTHORITATIVE for seat state (spec §4.1) precisely because a
+    // mirror that lagged across a Railway restart means a seat sold twice and a
+    // refund owed. With the store down the panel, the commands and the officer
+    // buttons all say "unavailable" and NOTHING IS SOLD — which is the correct
+    // failure for a feature that handles money.
+    //
+    // After a successful connect, resume():
+    //   (1) restyles runs whose start time passed during downtime as concluded,
+    //       leaving their board messages in place (spec §6);
+    //   (2) RE-ARMS the 30-minute release timer for every still-pending hold
+    //       from its `pendingUntil`, releasing immediately any hold that expired
+    //       while the bot was down rather than leaving it hanging (spec §10);
+    //   (3) re-attaches every live run's board message by persisted id,
+    //       re-posting and re-persisting any that were deleted by hand.
+    // initSchema()/resume() never throw to the boot path.
+    try {
+      const ok = await carryDb.initSchema();
+      if (ok) {
+        console.log('[ready] Carry sales store ready (MongoDB).');
+        await carryResume.resume(client);
+      } else if (process.env.MONGODB_URI) {
+        console.warn('[ready] Carry sales disabled — could not connect to MongoDB (no seats can be sold; check Atlas Network Access / URI).');
+      } else {
+        console.warn('[ready] Carry sales disabled — MONGODB_URI not set (no seats can be sold).');
+      }
+    } catch (err) {
+      console.warn('[ready] Carry sales init failed (carry disabled, bot still online):', err?.message || err);
     }
   },
 };

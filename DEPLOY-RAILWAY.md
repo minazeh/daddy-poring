@@ -51,6 +51,30 @@ The `.env` file is NOT pushed, so set these in the Railway dashboard:
 | `GUILD_ID` | Your server ID. Required — slash commands auto-register to this guild on startup. |
 | `APPLICATION_CHANNEL_ID` | Guild-application submissions channel. |
 | `STAFF_ROLE_ID` | Optional. |
+| `CARRY_PANEL_CHANNEL_ID` | Optional override. Defaults to the live guild's id in `carry/constants.js`. |
+| `CARRY_BOARD_CHANNEL_ID` | Optional override — public run board. |
+| `CARRY_PENDING_CHANNEL_ID` | Optional override — officer pending-payment board. |
+
+### ⚠️ Carry sales: the bot holds NO payment details
+
+`github.com/minazeh/daddy-poring` is a **public** repo, so no GCash number, bank
+detail, Wise or PayPal handle may ever be committed — and none needs to be.
+**There are no payment environment variables to set.** When a buyer books, the
+bot DMs them a clickable mention of the **runner** (the run's creator, stamped on
+the run by `/carryrun create`) and tells them to message that person to arrange
+payment. Money never passes through the bot or its config.
+
+If a run has no creator on record, the buyer is told an officer will follow up
+instead — the booking still stands and still appears on the pending board.
+
+**Operational requirement:** the runner must have **DMs open to server members**,
+or the buyer has no route to pay. Tell your officers.
+
+Carry sales also need `MONGODB_URI` (same Atlas cluster as everything else).
+Unlike the other features there is **no degraded in-memory mode** — with the
+store unreachable the panel, `/carryrun` and the officer buttons all reply
+"unavailable" and **nothing is sold**, which is the correct failure for a
+feature that handles money.
 
 (The reviewer roles, class/welcome channel IDs are constants in `guildapp/constants.js`
 and `events/guildMemberAdd.js`, so they don't need env vars.)
