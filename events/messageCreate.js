@@ -4,6 +4,7 @@ const activitySticky = require('../activitycampaign/sticky');
 const gvgReminder = require('../gvg/reminder');
 const quizEngine = require('../monsterquiz/engine');
 const ticketSticky = require('../ticket/sticky');
+const stickyEngine = require('../sticky/engine');
 const { logEvent } = require('../auditlog/logger');
 const { COLORS } = require('../auditlog/constants');
 
@@ -78,6 +79,21 @@ module.exports = {
       ticketSticky.onMessage(message);
     } catch (err) {
       console.warn('[ticket] Sticky trigger failed (kudos unaffected):', err?.message || err);
+    }
+
+    // General-purpose sticky messages (/stickymessage) — ADDITIVE, same
+    // fire-and-forget contract as every hook above. ONE Map lookup keyed by
+    // channel id, so it costs nothing for the overwhelming majority of messages
+    // in the server, which are not in a sticky channel. Never throws into (or
+    // blocks) kudos below.
+    //
+    // NO SELF-TRIGGER: the bot's own sticky repost cannot reach here — the
+    // `message.author?.bot` return at the top of execute() fires first, and
+    // sticky/engine.js repeats the check anyway.
+    try {
+      stickyEngine.onMessage(message);
+    } catch (err) {
+      console.warn('[sticky] Sticky trigger failed (kudos unaffected):', err?.message || err);
     }
 
     if (typeof message.content !== 'string') return;

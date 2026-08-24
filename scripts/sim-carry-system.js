@@ -982,7 +982,13 @@ async function main() {
       'roquiz', 'rune', 'shop', 'siege', 'skill', 'syncmembers'];
     const lost = BASELINE.filter(n => n !== 'partyfinder' && !names.includes(n));
     assert(lost.length === 0, `every other command still registers (${BASELINE.length - 1} of them)${lost.length ? ` — MISSING ${lost.join(', ')}` : ''}`);
-    assert(names.length === 30, `30 commands registered (was 29 incl. partyfinder) — got ${names.length}`);
+    // The invariant this section actually cares about is that the retirement
+    // removes EXACTLY ONE command and nothing else — expressed against the
+    // loaded set rather than a literal, so an unrelated new command does not
+    // turn this into a false failure. (It did once: /stickymessage was added
+    // 2026-08-24 and the old `=== 30` literal went red for no real reason.)
+    assert(names.length === commands.size - 1,
+      `retiring /partyfinder removes exactly one command: ${commands.size} loaded, ${names.length} registered`);
 
     const carryrun = commands.get('carryrun').data.toJSON();
     assert(carryrun.options.map(o => o.name).sort().join(',') === 'close,create,delete,edit,list',

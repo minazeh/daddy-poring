@@ -21,6 +21,8 @@ const ticketSticky = require('../ticket/sticky');
 const ticketSweeper = require('../ticket/sweeper');
 const carryDb = require('../carry/db');
 const carryResume = require('../carry/resume');
+const stickyDb = require('../sticky/db');
+const stickyResume = require('../sticky/resume');
 
 module.exports = {
   name: Events.ClientReady,
@@ -297,6 +299,34 @@ module.exports = {
       }
     } catch (err) {
       console.warn('[ready] Carry sales init failed (carry disabled, bot still online):', err?.message || err);
+    }
+
+    // Sticky Messages (/stickymessage): connect to MongoDB for the general-
+    // purpose sticky engine. Same Atlas cluster; own client. After a successful
+    // connect, resume() rebuilds the watch Map from sticky_messages — the Map is
+    // a CACHE, so this is the only thing standing between a restart and stickies
+    // that silently stop following their channels. It RE-ATTACHES by persisted
+    // messageId rather than reposting (Railway redeploys on every push; a
+    // repost-on-boot would republish every sticky in the server each time), and
+    // reconciles channels that vanished during downtime by removing their record
+    // rather than retrying forever.
+    //
+    // Degrades gracefully — no MONGODB_URI or Atlas unreachable means
+    // /stickymessage replies "unavailable" and the messageCreate hook skips
+    // reposting entirely; existing stickies stay where they are and the bot
+    // boots fully. initSchema()/resume() never throw to the boot path.
+    try {
+      const ok = await stickyDb.initSchema();
+      if (ok) {
+        console.log('[ready] Sticky message store ready (MongoDB).');
+        await stickyResume.resume(client);
+      } else if (process.env.MONGODB_URI) {
+        console.warn('[ready] Sticky messages disabled — could not connect to MongoDB (check Atlas Network Access / URI).');
+      } else {
+        console.warn('[ready] Sticky messages disabled — MONGODB_URI not set.');
+      }
+    } catch (err) {
+      console.warn('[ready] Sticky message init failed (stickies degraded, bot still online):', err?.message || err);
     }
   },
 };

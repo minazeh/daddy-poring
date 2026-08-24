@@ -9,6 +9,7 @@ const gvgReminder = require('../gvg/reminder');
 const monsterquiz = require('../monsterquiz/engine');
 const ticket = require('../ticket/handlers');
 const petition = require('../petition/handlers');
+const stickymessage = require('../sticky/handlers');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -111,6 +112,14 @@ module.exports = {
         // forever across restarts.
         const petitionHandled = await petition.route(interaction);
         if (petitionHandled) return;
+
+        // Sticky messages: sticky:modal:<set|edit>:<channelId> — the ONLY
+        // interaction this feature owns. route() claims nothing but the
+        // `sticky:` namespace, which no other router uses. The target channel
+        // rides in the customId, so a modal opened before a redeploy and
+        // submitted after it still lands in the right channel.
+        const stickyHandled = await stickymessage.route(interaction);
+        if (stickyHandled) return;
 
         const handled = await guildapp.route(interaction);
         if (handled) return;
