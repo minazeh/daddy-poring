@@ -26,12 +26,22 @@ the single database write in §5.1.
 
 Two sides, and they are not symmetric.
 
-| Side | Action | Cap |
-|---|---|---|
-| **Officer** | Marks a slot **Available**, which opens it | Uncapped. Several officers may sit on the same slot |
-| **Member** | Presses **Join** on an open slot | **3 members per slot** |
+This is an **internal rota**, not a public sign-up. Both sides are staff.
 
-**A slot with no officer on it cannot be joined.** Availability is what creates
+| Side | Who | Action | Cap |
+|---|---|---|---|
+| **Runner** | **Godfathers only** | Marks a slot **Available**, which opens it | Uncapped. Several may sit on one slot |
+| **Rider** | **Officers** | Presses **Join** on an open slot | **3 per slot** |
+
+`GODFATHERS_ROLE_ID` is itself the first entry of `TICKET_OFFICER_ROLE_IDS`, so
+`isOfficer()` is true for a Godfather too: a Godfather can still join a slot to
+be carried by another. **The gate is one-directional on purpose** — an officer
+who is not a Godfather can join but cannot open.
+
+Both gates are checked twice, at the prompt and again at the commit, because an
+ephemeral select can sit open across a role change and a customId is guessable.
+
+**A slot with no runner on it cannot be joined.** Availability is what creates
 a slot; joining only ever fills one that already exists. That ordering is the
 whole design and it is why a member never books a run nobody can staff.
 
@@ -96,7 +106,7 @@ Member names are deliberately **not** on the panel. They live in the ephemeral
 detail view. Seven days of names would blow the embed budget (§7.3) and the
 board's job is at-a-glance availability.
 
-### 3.2 Join flow (any member)
+### 3.2 Join flow (officers)
 
 ```
 [ Join a slot ] → ephemeral
@@ -114,7 +124,7 @@ button after it — the write happens on the select, and the ephemeral reply is
 already the receipt. Two steps to join, both of them choices, neither of them a
 formality.
 
-### 3.3 Available flow (officers only)
+### 3.3 Available flow (Godfathers only)
 
 ```
 [ I'm available ] → ephemeral
@@ -123,9 +133,10 @@ formality.
    → marked, panel re-renders
 ```
 
-Officer set is `GODFATHERS_ROLE_ID` + `TICKET_OFFICER_ROLE_IDS`, imported from
-`ticket/constants` exactly as `carry/constants` already does. A non-officer
-pressing this gets an ephemeral refusal and nothing else happens.
+**Godfathers only**, via `GODFATHERS_ROLE_ID` imported from `ticket/constants`
+exactly as `carry/constants` already does. An officer who is not a Godfather
+gets an ephemeral refusal pointing them at **Join a slot**, and nothing else
+happens.
 
 ### 3.4 My slots (anyone)
 

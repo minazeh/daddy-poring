@@ -90,7 +90,7 @@ function panelEmbed(doc) {
     .setTitle(PANEL_TITLE)
     .setDescription(
       `Week of **${weekHeading(weekStart)}** · all times **${TZ_LABEL}**\n` +
-      `Officers open a slot with **I'm available**. Members then **Join** it — ` +
+      `**Godfathers** open a slot with **I'm available**. **Officers** then **Join** it — ` +
       `up to **${MAX_MEMBERS_PER_SLOT}** per slot, and you're in straight away.`,
     );
 
@@ -129,7 +129,7 @@ function panelEmbed(doc) {
   embed.setFooter({
     text: totalOpen
       ? `${totalOpen} slot${totalOpen === 1 ? '' : 's'} open · ${totalJoined} joined`
-      : 'No slots open yet — officers, mark your availability.',
+      : 'No slots open yet — Godfathers, mark your availability.',
   });
 
   return embed;

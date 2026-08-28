@@ -6,11 +6,20 @@
 // route() claims ONLY the `occarry:` namespace and returns false for everything
 // else, so it is safe anywhere in the events/interactionCreate.js chain.
 //
+// WHO CAN DO WHAT (Conrad, 2026-08-28). This is an INTERNAL rota, not a public
+// sign-up:
+//   "I'm available" — GODFATHERS ONLY. They are the ones running carries.
+//   "Join a slot"   — OFFICERS. They are the ones being carried.
+// GODFATHERS_ROLE_ID is itself the first entry of TICKET_OFFICER_ROLE_IDS, so
+// isOfficer() is true for a Godfather as well: a Godfather can still join a
+// slot to be carried by another. The gate is one-directional on purpose.
+//
 // NO PENDING STATE (spec §0). Every join is committed by db.claimMemberSlot()
 // at the moment the time is selected. There is no hold, no expiry and no
 // confirmation step on the member path — the ephemeral reply IS the receipt.
-// The one confirmation in this file is an OFFICER withdrawing from a slot that
-// already has members on it, which is a different thing: it strands people.
+// The one confirmation in this file is a GODFATHER withdrawing from a slot that
+// already has officers joined to it, which is a different thing: it strands
+// people who were counting on the run.
 // ---------------------------------------------------------------------------
 
 const { MessageFlags } = require('discord.js');
@@ -105,10 +114,17 @@ async function postPanel(client, guildId, channel) {
 // ---------------------------------------------------------------------------
 // Flow: Join / I'm available — step 1, pick a day.
 // ---------------------------------------------------------------------------
-async function handleDayPrompt(interaction, { openOnly, selectId, officerOnly }) {
-  if (officerOnly && !isOfficer(interaction)) {
+async function handleDayPrompt(interaction, { openOnly, selectId, requires }) {
+  if (requires === 'godfather' && !isGodfather(interaction)) {
     await interaction.reply({
-      content: "Sorry — only officers can mark availability. If you want a carry, use **Join a slot**.",
+      content: "Sorry — only Godfathers can mark availability. If you want a carry, use **Join a slot**.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  if (requires === 'officer' && !isOfficer(interaction)) {
+    await interaction.reply({
+      content: 'Sorry — this schedule is for officers.',
       flags: MessageFlags.Ephemeral,
     });
     return;
@@ -128,7 +144,7 @@ async function handleDayPrompt(interaction, { openOnly, selectId, officerOnly })
   if (!row) {
     await interaction.reply({
       content: openOnly
-        ? "No slots are open yet this week. An officer needs to mark availability first."
+        ? "No slots are open yet this week. A Godfather needs to mark availability first."
         : 'The week has no days to show, which should not happen — tell an officer.',
       flags: MessageFlags.Ephemeral,
     });
@@ -182,6 +198,12 @@ async function handleSlotPrompt(interaction, dayKey, { openOnly, slotIdBase }) {
 // Flow: the commit. A member join is finished here and nowhere else.
 // ---------------------------------------------------------------------------
 async function handleJoinCommit(interaction) {
+  // Re-checked here and not only at the prompt: the ephemeral select can sit
+  // open across a role change, and the customId is guessable.
+  if (!isOfficer(interaction)) {
+    await interaction.update({ content: 'Sorry — this schedule is for officers.', components: [] });
+    return;
+  }
   const key = interaction.values?.[0];
   const parsed = parseSlotKey(key);
   if (!parsed) {
@@ -222,8 +244,8 @@ async function handleJoinCommit(interaction) {
 }
 
 async function handleAvailCommit(interaction) {
-  if (!isOfficer(interaction)) {
-    await interaction.update({ content: 'Only officers can mark availability.', components: [] });
+  if (!isGodfather(interaction)) {
+    await interaction.update({ content: 'Only Godfathers can mark availability.', components: [] });
     return;
   }
   const key = interaction.values?.[0];
@@ -358,7 +380,7 @@ async function handleOfficerWithdraw(interaction, key, { confirmed }) {
       try {
         const user = await interaction.client.users.fetch(m.userId);
         await user.send(
-          `Your officer carry slot on **${when}** was withdrawn by the officer running it, ` +
+          `Your officer carry slot on **${when}** was withdrawn by the Godfather running it, ` +
           `so the slot has closed. Sorry about that — pick another slot on the schedule board.`,
         );
         notified += 1;
@@ -385,11 +407,11 @@ async function route(interaction) {
   try {
     if (interaction.isButton()) {
       if (id === IDS.JOIN_BUTTON) {
-        await handleDayPrompt(interaction, { openOnly: true, selectId: IDS.JOIN_DAY, officerOnly: false });
+        await handleDayPrompt(interaction, { openOnly: true, selectId: IDS.JOIN_DAY, requires: 'officer' });
         return true;
       }
       if (id === IDS.AVAIL_BUTTON) {
-        await handleDayPrompt(interaction, { openOnly: false, selectId: IDS.AVAIL_DAY, officerOnly: true });
+        await handleDayPrompt(interaction, { openOnly: false, selectId: IDS.AVAIL_DAY, requires: 'godfather' });
         return true;
       }
       if (id === IDS.MINE_BUTTON) { await handleMine(interaction); return true; }

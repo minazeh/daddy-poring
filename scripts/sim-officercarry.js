@@ -507,6 +507,40 @@ async function freshWeek(now = new Date()) {
     pass('joins are immediate and final — nothing can hold, expire or un-commit one');
   }
 
+  // -------------------------------------------------------------------------
+  section('13. Role gating - Godfathers open, officers join (Conrad, 2026-08-28)');
+  {
+    const handlers = require('../officercarry/handlers');
+    const { GODFATHERS_ROLE_ID, OFFICER_ROLE_IDS } = require('../officercarry/constants');
+    const OFFICER_ONLY = OFFICER_ROLE_IDS.find(r => r !== GODFATHERS_ROLE_ID);
+    ok(Boolean(OFFICER_ONLY), 'there is at least one officer role that is not Godfathers');
+
+    const who = roles => ({ member: { roles: { cache: new Set(roles) } }, user: { id: 'u' } });
+
+    ok(handlers.isGodfather(who([GODFATHERS_ROLE_ID])), 'a Godfather is a Godfather');
+    ok(!handlers.isGodfather(who([OFFICER_ONLY])), 'a plain officer is NOT a Godfather');
+    ok(handlers.isOfficer(who([OFFICER_ONLY])), 'a plain officer is an officer');
+    ok(handlers.isOfficer(who([GODFATHERS_ROLE_ID])),
+      'a Godfather also passes the officer gate, so they can join a slot to be carried');
+    ok(!handlers.isOfficer(who(['some-random-role'])), 'a non-staff member is neither');
+    ok(!handlers.isGodfather({}), 'a missing member object fails closed');
+    ok(!handlers.isOfficer({}), 'a missing member object fails closed on the officer gate too');
+
+    // Both gates must hold at the COMMIT, not only at the prompt: an ephemeral
+    // select can sit open across a role change, and a customId is guessable.
+    const src = require('fs').readFileSync(
+      require('path').join(__dirname, '..', 'officercarry', 'handlers.js'), 'utf8');
+    const cut = (from, to) => src.slice(src.indexOf(from), src.indexOf(to));
+    const joinCommit = cut('async function handleJoinCommit', 'async function handleAvailCommit');
+    const availCommit = cut('async function handleAvailCommit', 'async function handleMine');
+
+    ok(joinCommit.includes('isOfficer(interaction)'), 'handleJoinCommit re-checks the officer gate');
+    ok(availCommit.includes('isGodfather(interaction)'), 'handleAvailCommit re-checks the Godfather gate');
+    ok(!availCommit.includes('isOfficer(interaction)'),
+      'availability never falls back to the officer gate');
+    pass('Godfathers open slots, officers join them, and both gates hold at the commit');
+  }
+
   console.log(`\n${'='.repeat(60)}`);
   console.log(`ALL GREEN — ${checks} assertions passed.`);
 })().catch(err => {
