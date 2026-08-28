@@ -10,6 +10,7 @@ const monsterquiz = require('../monsterquiz/engine');
 const ticket = require('../ticket/handlers');
 const petition = require('../petition/handlers');
 const stickymessage = require('../sticky/handlers');
+const officercarry = require('../officercarry/handlers');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -120,6 +121,14 @@ module.exports = {
         // submitted after it still lands in the right channel.
         const stickyHandled = await stickymessage.route(interaction);
         if (stickyHandled) return;
+
+        // Officer carry scheduler: occarry:join/avail/mine panel buttons, the
+        // day + slot selects, and the leave/withdraw buttons. route() claims
+        // ONLY the `occarry:` namespace, which no other router uses. The three
+        // panel ids are static and every id past them carries the day or slot
+        // key, so a board posted months ago still resolves after any redeploy.
+        const officerCarryHandled = await officercarry.route(interaction);
+        if (officerCarryHandled) return;
 
         const handled = await guildapp.route(interaction);
         if (handled) return;

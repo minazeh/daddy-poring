@@ -23,6 +23,9 @@ const carryDb = require('../carry/db');
 const carryResume = require('../carry/resume');
 const stickyDb = require('../sticky/db');
 const stickyResume = require('../sticky/resume');
+const officerCarryDb = require('../officercarry/db');
+const officerCarryResume = require('../officercarry/resume');
+const officerCarrySweeper = require('../officercarry/sweeper');
 
 module.exports = {
   name: Events.ClientReady,
@@ -327,6 +330,38 @@ module.exports = {
       }
     } catch (err) {
       console.warn('[ready] Sticky message init failed (stickies degraded, bot still online):', err?.message || err);
+    }
+
+    // Officer carry scheduler (docs/OFFICER_CARRY_SCHEDULER_SPEC.md).
+    //
+    // Boot order matters and is deliberate:
+    //   initSchema()  connect + indexes
+    //   adoptPanels() re-attach the existing board and REPAINT it. While the
+    //                 bot was down the sweeper could not roll the week, so the
+    //                 message on screen may still be showing a week that has
+    //                 ended. Adopt, never repost — Railway redeploys on every
+    //                 push and reposting would republish the board each time.
+    //   start()       sweeps IMMEDIATELY, rolling any week whose boundary
+    //                 passed during downtime, then every 5 minutes. This is
+    //                 why a missed Monday is caught up rather than lost.
+    //
+    // Degrades gracefully — no MONGODB_URI or Atlas unreachable means every
+    // scheduler surface says "unavailable" and the bot boots fully. There is no
+    // in-memory fallback on purpose: a schedule that evaporates on the next
+    // redeploy is worse than an honest refusal. Nothing here throws to boot.
+    try {
+      const ok = await officerCarryDb.initSchema();
+      if (ok) {
+        console.log('[ready] Officer carry scheduler store ready (MongoDB).');
+        await officerCarryResume.adoptPanels(client);
+        officerCarrySweeper.start(client);
+      } else if (process.env.MONGODB_URI) {
+        console.warn('[ready] Officer carry scheduler disabled — could not connect to MongoDB (check Atlas Network Access / URI).');
+      } else {
+        console.warn('[ready] Officer carry scheduler disabled — MONGODB_URI not set.');
+      }
+    } catch (err) {
+      console.warn('[ready] Officer carry scheduler init failed (scheduler degraded, bot still online):', err?.message || err);
     }
   },
 };
