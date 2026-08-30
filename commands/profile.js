@@ -72,25 +72,33 @@ async function loadGuildLayouts(guild, userId) {
     ]);
 
   const memberMap = buildMemberMap(members);
+  const polarity = resolveRaidLinkedParty({ raids: polRaids, parties: polParties, memberMap }, userId);
+  const siege = resolveRaidLinkedParty({ raids: siegeRaids, parties: siegeParties, memberMap }, userId);
 
-  // All three layouts always come back, resolved or null. The profile renders
-  // them as a fixed three-column row, so an absent layout is an em dash in its
-  // column rather than a missing field — dropping one would collapse the row
-  // to two columns and shuffle the others sideways.
   return {
     gvg: resolveGvgParty({ parties, raidGroups, memberMap }, userId),
-    polarity: resolveRaidLinkedParty({ raids: polRaids, parties: polParties, memberMap }, userId),
-    siege: resolveRaidLinkedParty({ raids: siegeRaids, parties: siegeParties, memberMap }, userId),
+    polarity,
+    siege,
+    // Whether the layout EXISTS for this guild at all, which is a different
+    // question from whether this member is in it. A layout the web app has
+    // never seeded is omitted from the profile entirely; a seeded layout the
+    // member simply isn't in shows an explicit "—", because "not assigned" is
+    // an answer and a missing field is not.
+    //
+    // Resolving a party is enough on its own: if the parties are seeded but the
+    // raid docs are not, the member IS assigned and the block must still show
+    // (reading "Unassigned" for the raid). Gating on the raid count alone would
+    // hide a real assignment behind a half-seeded collection.
+    hasPolarity: polRaids.length > 0 || !!polarity,
+    hasSiege: siegeRaids.length > 0 || !!siege,
   };
 }
 
-// "**Party Name** (RaidName)" for a resolved party context, plus a second line
-// for a polarity MAIN raid — the top-power group, in the wording /polarityraid
-// uses. Bold because it now heads a column that also holds the member list, and
-// the column is a third of the embed's width.
+// "Party Name (RaidName)" for a resolved party context, plus a second line for a
+// polarity MAIN raid — the top-power group, in the wording /polarityraid uses.
 function partyNameValue(ctx) {
   if (!ctx) return '—';
-  const head = `**${ctx.party.name}** (${ctx.raidName})`;
+  const head = `${ctx.party.name} (${ctx.raidName})`;
   return ctx.kind === 'main' ? `${head}\nMain raid (top power)` : head;
 }
 
@@ -116,59 +124,47 @@ function partyMembersValue(ctx, cap = LIST_FIELD_CAP) {
   return lines.join('\n');
 }
 
-// One column: the party heading and its member list in a single field value.
-// Merged rather than split across two fields because Discord only puts INLINE
-// fields side by side, and a heading field plus a list field would be two
-// columns of the three available — the party and its members would end up in
-// different columns of the row instead of stacked in one.
-function layoutColumnValue(ctx, cap = LIST_FIELD_CAP) {
-  if (!ctx) return '—';
-  const head = partyNameValue(ctx);
-  // The heading shares the field's budget with the list, so the list gets what
-  // is left rather than the full cap.
-  const list = partyMembersValue(ctx, Math.max(MIN_LIST_CAP, cap - head.length - 1));
-  return `${head}\n${list}`;
-}
-
-// The three layouts for one guild as ONE ROW of three inline columns:
-// Guild League | Polarity | Siege. `suffix` labels the secondary guild's row.
-//
-// All three are always emitted, even when the member is in none of them, so the
-// row keeps its shape — Discord packs inline fields three to a row, so dropping
-// one would pull the next guild's column up beside the survivors.
-//
-// Entries carry their ctx so the budget pass below can re-render them narrower.
+// The layout blocks for one guild, in board order: GvG, Polarity, Siege.
+// `suffix` labels the secondary guild's copy. The primary guild's GvG block is
+// built by the caller because it shares a three-column row with Job Class and
+// Power; every other block is uniform, so it is built here.
+// Entries tagged isList carry their ctx so the budget pass can re-render them.
 function layoutFields(layouts, suffix = '') {
+  const fields = [];
   const label = base => `${base}${suffix}`;
-  const src = layouts || { gvg: null, polarity: null, siege: null };
-  return [
-    { name: label('Guild League'), value: layoutColumnValue(src.gvg), inline: true, isList: true, ctx: src.gvg },
-    { name: label('Polarity'), value: layoutColumnValue(src.polarity), inline: true, isList: true, ctx: src.polarity },
-    { name: label('Siege'), value: layoutColumnValue(src.siege), inline: true, isList: true, ctx: src.siege },
-  ];
+
+  if (suffix) {
+    fields.push({ name: label('Party Name'), value: partyNameValue(layouts.gvg), inline: false });
+    fields.push({ name: label('Party Members'), value: partyMembersValue(layouts.gvg), inline: false, isList: true, ctx: layouts.gvg });
+  }
+
+  if (layouts.hasPolarity) {
+    fields.push({ name: label('Polarity Party'), value: partyNameValue(layouts.polarity), inline: false });
+    if (layouts.polarity) {
+      fields.push({ name: label('Polarity Members'), value: partyMembersValue(layouts.polarity), inline: false, isList: true, ctx: layouts.polarity });
+    }
+  }
+
+  if (layouts.hasSiege) {
+    fields.push({ name: label('Siege Party'), value: partyNameValue(layouts.siege), inline: false });
+    if (layouts.siege) {
+      fields.push({ name: label('Siege Members'), value: partyMembersValue(layouts.siege), inline: false, isList: true, ctx: layouts.siege });
+    }
+  }
+
+  return fields;
 }
 
 // The whole field list, in display order. Split out of execute() so the sim
 // exercises the real assembly rather than a copy of it that can drift.
 //   primary/secondary — loadGuildLayouts() results, or null.
 function buildProfileFields({ username, ign, jobClass, powerText, kudos, kudosLimit, primary, secondary }) {
-  // ROW PACKING MATTERS HERE. Discord lays inline fields out three to a row and
-  // starts a new row only when three are used up or a non-inline field breaks
-  // it. So every inline row above the layout row must contain exactly THREE
-  // fields, or the layout row's first column gets pulled up to fill the gap and
-  // the remaining two orphan onto the next line.
-  //
-  // That is why In-game Name is inline and grouped with Job Class and Power:
-  // it completes that row. Username stays full-width and breaks the row above.
   const fields = [
     { name: 'Username', value: username, inline: false },
-    { name: 'In-game Name', value: ign, inline: true },
-    { name: 'Job Class', value: jobClass, inline: true },
-    { name: 'Power', value: powerText, inline: true },
+    { name: 'In-game Name', value: ign, inline: false },
   ];
 
-  // Kudos row — three columns, so it too leaves the next row clean. Omitted
-  // entirely when kudos is unavailable, which is fine: three is still three.
+  // Kudos row (3 cols) — comes BEFORE party/class/power. Only when available.
   if (kudos) {
     const rankValue = kudos.total > 0 && kudos.rank
       ? `#${kudos.rank} of ${kudos.totalRecipients}`
@@ -180,10 +176,18 @@ function buildProfileFields({ username, ign, jobClass, powerText, kudos, kudosLi
     );
   }
 
-  // The layout row: Guild League | Polarity | Siege, three inline columns.
-  // Always emitted — with every column an em dash when the roster is
-  // unavailable — so the profile keeps one shape rather than two.
-  fields.push(...layoutFields(primary));
+  // 3-col row: Party Name | Job Class | Power, then the GvG member list.
+  const primaryGvg = primary ? primary.gvg : null;
+  fields.push(
+    { name: 'Party Name', value: partyNameValue(primaryGvg), inline: true },
+    { name: 'Job Class', value: jobClass, inline: true },
+    { name: 'Power', value: powerText, inline: true },
+    { name: 'Party Members', value: partyMembersValue(primaryGvg), inline: false, isList: true, ctx: primaryGvg },
+  );
+
+  // Polarity and Siege for the primary guild, then the secondary guild's full
+  // block (GvG + Polarity + Siege) when the member is in both.
+  if (primary) fields.push(...layoutFields(primary));
   if (secondary) fields.push(...layoutFields(secondary, ' (Mummy)'));
 
   return fields;
@@ -206,7 +210,7 @@ function fitFieldsToEmbed(title, fields, footerText) {
   const listChars = lists.reduce((s, f) => s + f.value.length, 0);
   const nonList = total - listChars;
   const per = Math.max(MIN_LIST_CAP, Math.floor((SAFE_TOTAL - nonList) / lists.length));
-  for (const f of lists) f.value = layoutColumnValue(f.ctx, per);
+  for (const f of lists) f.value = partyMembersValue(f.ctx, per);
 
   return embedChars(title, fields, footerText);
 }
@@ -342,7 +346,6 @@ module.exports._internals = {
   buildMemberMap,
   partyNameValue,
   partyMembersValue,
-  layoutColumnValue,
   layoutFields,
   buildProfileFields,
   toEmbedFields,
