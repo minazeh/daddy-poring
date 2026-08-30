@@ -1,19 +1,24 @@
 // ---------------------------------------------------------------------------
-// Offline simulation for /profile, covering the addition of the POLARITY and
-// SIEGE party blocks alongside the existing GvG one.
+// Offline simulation for /profile, covering the POLARITY and SIEGE columns
+// added alongside the renamed GUILD LEAGUE one.
 //
 // No Discord connection, no Atlas. The resolvers are pure functions over plain
 // documents shaped exactly like the collections roster/db.js reads, so this
 // exercises the real code — buildProfileFields() is the same function execute()
 // calls, not a copy of it.
 //
-// The thing that can actually break this feature is Discord's 6,000-character
-// embed cap: a member in BOTH guilds now carries SIX member lists, and six
-// fields at the 1,024 per-field cap is 6,144 on their own. Check 6 is therefore
-// a NEGATIVE CONTROL — it builds that worst case, asserts the UNTRIMMED embed
-// really does exceed 6,000, and only then asserts the budget pass brings it
-// back under. If the control ever stops exceeding the cap, this harness has
-// lost the ability to detect the bug it is guarding.
+// The three layouts render as ONE ROW of three inline columns. Discord packs
+// inline fields three to a row, so the row's shape depends on all three being
+// present and inline and contiguous; check 4 asserts exactly that, because a
+// dropped or non-inline column silently reflows the whole row.
+//
+// The thing that can actually break the feature is Discord's 6,000-character
+// embed cap: a member in BOTH guilds carries SIX columns, and six fields at the
+// 1,024 per-field cap is 6,144 on their own. Check 6 is therefore a NEGATIVE
+// CONTROL — it builds that worst case, asserts the UNTRIMMED embed really does
+// exceed 6,000, and only then asserts the budget pass brings it back under. If
+// the control ever stops exceeding the cap, this harness has lost the ability
+// to detect the bug it is guarding.
 //
 //   node scripts/sim-profile.js
 // ---------------------------------------------------------------------------
@@ -28,6 +33,7 @@ const {
   buildMemberMap,
   partyNameValue,
   partyMembersValue,
+  layoutColumnValue,
   layoutFields,
   buildProfileFields,
   toEmbedFields,
@@ -106,24 +112,50 @@ function siegeFixture(docs, raidKey = 'bravo') {
 }
 
 // A loadGuildLayouts()-shaped result, assembled from the fixtures above.
-function layoutsFor(docs, { polarity = true, siege = true, inPolarity = true, inSiege = true, kind = 'main' } = {}) {
+function layoutsFor(docs, { inPolarity = true, inSiege = true, kind = 'main' } = {}) {
   const pol = polarityFixture(docs, kind);
   const sg = siegeFixture(docs);
   if (!inPolarity) pol.parties[0].memberIds = pol.parties[0].memberIds.filter(id => id !== ME);
   if (!inSiege) sg.parties[0].memberIds = sg.parties[0].memberIds.filter(id => id !== ME);
   return {
     gvg: resolveGvgParty(gvgFixture(docs), ME),
-    polarity: polarity ? resolveRaidLinkedParty(pol, ME) : null,
-    siege: siege ? resolveRaidLinkedParty(sg, ME) : null,
-    hasPolarity: polarity,
-    hasSiege: siege,
+    polarity: resolveRaidLinkedParty(pol, ME),
+    siege: resolveRaidLinkedParty(sg, ME),
   };
 }
 
 const names = fields => fields.map(f => f.name);
 
+// Discord's row packing, modelled: inline fields accumulate three to a row; a
+// non-inline field breaks the current row and takes a full row of its own.
+//
+// This is the check that matters for a three-column layout. Asserting the three
+// columns are inline and adjacent is NOT sufficient — if the row above them
+// holds only two inline fields, Discord pulls the first column up to fill it
+// and orphans the other two. Only packing reveals that.
+function packRows(fields) {
+  const rows = [];
+  let row = [];
+  for (const f of fields) {
+    if (!f.inline) {
+      if (row.length) { rows.push(row); row = []; }
+      rows.push([f]);
+      continue;
+    }
+    row.push(f);
+    if (row.length === 3) { rows.push(row); row = []; }
+  }
+  if (row.length) rows.push(row);
+  return rows.map(r => r.map(f => f.name));
+}
+
+const baseArgs = {
+  username: 'conrad', ign: 'Conrad', jobClass: 'Rune Knight', powerText: '152400',
+  kudos: { total: 12, rank: 3, totalRecipients: 40, givenToday: 1 }, kudosLimit: 5,
+};
+
 (async () => {
-  console.log('\n/profile — polarity + siege blocks\n' + '='.repeat(60));
+  console.log('\n/profile — Guild League | Polarity | Siege\n' + '='.repeat(60));
 
   // -------------------------------------------------------------------------
   section('1. The two linkages resolve, and they are genuinely different');
@@ -169,9 +201,10 @@ const names = fields => fields.map(f => f.name);
     eq(noGvg, null, 'resolver returns null when the member is in no party');
     eq(partyNameValue(null), '—', 'null context renders an em dash, not a crash');
     eq(partyMembersValue(null), '—', 'null context member list renders an em dash');
+    eq(layoutColumnValue(null), '—', 'a null column renders an em dash — never a blank field value');
 
     const emptyParty = { party: { name: 'Party 9', memberIds: [] }, raidName: 'Bravo', memberMap: new Map() };
-    eq(partyMembersValue(emptyParty), '—', 'an empty party renders an em dash, never a blank value');
+    ok(layoutColumnValue(emptyParty).endsWith('—'), 'an empty party shows its name and an em dash for members');
 
     // A raid the member is in that has no matching raid doc.
     const orphan = resolveRaidLinkedParty(
@@ -179,116 +212,123 @@ const names = fields => fields.map(f => f.name);
       ME,
     );
     eq(orphan.raidName, 'Unassigned', 'a party whose raid doc is missing reads Unassigned, not undefined');
+    ok(layoutColumnValue(orphan).startsWith('**Party 1** (Unassigned)'),
+      'a real assignment still shows even when the raid docs are missing');
     pass('every absence path produces a printable value');
   }
 
   // -------------------------------------------------------------------------
-  section('3. Field labels, order, and the main-raid marker');
+  section('3. Field labels and order — "Guild League", not "Party"');
   {
     const docs = members(5);
-    const primary = layoutsFor(docs);
-    const fields = buildProfileFields({
-      username: 'conrad', ign: 'Conrad', jobClass: 'Rune Knight', powerText: '152400',
-      kudos: { total: 12, rank: 3, totalRecipients: 40, givenToday: 1 }, kudosLimit: 5,
-      primary, secondary: null,
-    });
+    const fields = buildProfileFields({ ...baseArgs, primary: layoutsFor(docs), secondary: null });
 
     assert.deepStrictEqual(names(fields), [
-      'Username', 'In-game Name',
+      'Username',
+      'In-game Name', 'Job Class', 'Power',
       'Kudos', 'Rank', 'Given Today',
-      'Party Name', 'Job Class', 'Power', 'Party Members',
-      'Polarity Party', 'Polarity Members',
-      'Siege Party', 'Siege Members',
+      'Guild League', 'Polarity', 'Siege',
     ], 'single-guild field order');
     checks += 1;
 
+    // The rename must be complete — no "Party" label may survive anywhere.
+    for (const n of names(fields)) {
+      ok(!/^Party/.test(n), `no field is still labelled "${n}"`);
+    }
+
     const byName = Object.fromEntries(fields.map(f => [f.name, f.value]));
-    eq(byName['Party Name'], 'Party 1 (Raid Alpha)', 'GvG value is unchanged from before this feature');
-    ok(byName['Polarity Party'].startsWith('Party 1 (Main A)'), 'polarity value is "Party (Raid)"');
-    ok(byName['Polarity Party'].includes('Main raid (top power)'),
+    ok(byName['Guild League'].startsWith('**Party 1** (Raid Alpha)'), 'Guild League column heads with its party and raid');
+    ok(byName['Guild League'].includes('1. Mexxxxxx - Rune Knight'), 'Guild League column carries its member list');
+    ok(byName['Polarity'].startsWith('**Party 1** (Main A)'), 'Polarity column heads with its party and raid');
+    ok(byName['Polarity'].includes('Main raid (top power)'),
       'a MAIN polarity raid says so — it is the top-power group');
-    eq(byName['Siege Party'], 'Party 3 (Bravo)', 'siege value is "Party (Raid)" with no marker');
+    ok(byName['Siege'].startsWith('**Party 3** (Bravo)'), 'Siege column heads with its party and raid');
+    ok(!byName['Siege'].includes('Main raid'), 'the siege column carries no main-raid marker');
 
     // A normal-kind polarity raid must NOT claim to be a main raid.
     const normal = layoutsFor(docs, { kind: 'normal' });
-    ok(!partyNameValue(normal.polarity).includes('Main raid'),
+    ok(!layoutColumnValue(normal.polarity).includes('Main raid'),
       'a NORMAL polarity raid carries no main-raid marker');
+    pass('labels renamed, order right, party and members share one column');
+  }
 
-    // The three columns still sit on one row.
-    for (const n of ['Party Name', 'Job Class', 'Power']) {
-      ok(fields.find(f => f.name === n).inline === true, `${n} stays inline`);
+  // -------------------------------------------------------------------------
+  section('4. The layout row is three inline columns, always');
+  {
+    const docs = members(5);
+
+    // THE ASSERTION THAT MATTERS: pack the fields the way Discord does and
+    // require the three columns to occupy a row of their OWN. Adjacent-and-
+    // inline is not enough — an incomplete row above pulls the first column up
+    // into it and orphans the other two onto the next line, which is exactly
+    // what the first cut of this feature did.
+    const fields = buildProfileFields({ ...baseArgs, primary: layoutsFor(docs), secondary: null });
+    const rows = packRows(fields);
+    assert.deepStrictEqual(rows, [
+      ['Username'],
+      ['In-game Name', 'Job Class', 'Power'],
+      ['Kudos', 'Rank', 'Given Today'],
+      ['Guild League', 'Polarity', 'Siege'],
+    ], 'the three layouts occupy one row of their own');
+    checks += 1;
+
+    // Every inline row above the layout row must be FULL, or the packing shifts.
+    for (const r of rows.slice(0, -1)) {
+      ok(r.length === 3 || r.length === 1,
+        `row [${r.join(' | ')}] is either a full three or a full-width single — a two leaks the next row`);
     }
-    ok(fields.find(f => f.name === 'Polarity Party').inline === false,
-      'the polarity block is full-width, not squeezed into a column');
-    pass('labels, order and the main-raid marker are right; the existing row is untouched');
+
+    // Same guarantee with kudos unavailable, which removes a whole row.
+    const noKudos = packRows(buildProfileFields({ ...baseArgs, kudos: null, primary: layoutsFor(docs), secondary: null }));
+    assert.deepStrictEqual(noKudos[noKudos.length - 1], ['Guild League', 'Polarity', 'Siege'],
+      'the layout row survives kudos being unavailable');
+    checks += 1;
+
+    // And with both guilds: two clean layout rows, one per guild.
+    const both = packRows(buildProfileFields({ ...baseArgs, primary: layoutsFor(docs), secondary: layoutsFor(docs) }));
+    assert.deepStrictEqual(both.slice(-2), [
+      ['Guild League', 'Polarity', 'Siege'],
+      ['Guild League (Mummy)', 'Polarity (Mummy)', 'Siege (Mummy)'],
+    ], 'each guild gets its own clean three-column row');
+    checks += 1;
+
+    for (const f of fields.filter(x => x.isList)) ok(f.inline === true, `${f.name} is inline`);
+
+    // Absent layouts do NOT drop their column, or the row would collapse to two
+    // and the next guild's columns would slide up beside the survivors.
+    const partial = layoutFields(layoutsFor(docs, { inPolarity: false, inSiege: false }));
+    eq(partial.length, 3, 'a member in neither polarity nor siege still gets three columns');
+    eq(partial.find(f => f.name === 'Polarity').value, '—', 'the empty polarity column is an em dash');
+    eq(partial.find(f => f.name === 'Siege').value, '—', 'the empty siege column is an em dash');
+
+    // Roster unavailable entirely (null layouts) — same shape, no crash.
+    const none = layoutFields(null);
+    eq(none.length, 3, 'a null layout set still yields three columns');
+    for (const f of none) eq(f.value, '—', `${f.name} is an em dash when the roster is unavailable`);
+    pass('the row keeps its shape through every absence');
   }
 
   // -------------------------------------------------------------------------
-  section('4. A layout that is not set up is omitted; one you are not in says so');
+  section('5. Both guilds — two rows of three, 13 fields');
   {
     const docs = members(5);
+    const fields = buildProfileFields({ ...baseArgs, primary: layoutsFor(docs), secondary: layoutsFor(docs) });
 
-    // Web app never seeded the siege collections for this guild.
-    const noSiege = layoutsFor(docs, { siege: false });
-    const f1 = layoutFields(noSiege);
-    ok(names(f1).some(n => n.startsWith('Polarity')), 'polarity block present when seeded');
-    ok(!names(f1).some(n => n.startsWith('Siege')),
-      'an unseeded siege contributes NO fields at all — not an empty one');
-
-    // Seeded, but this member is not in a siege party.
-    const outOfSiege = layoutsFor(docs, { inSiege: false });
-    const f2 = layoutFields(outOfSiege);
-    eq(f2.find(f => f.name === 'Siege Party').value, '—',
-      'a seeded siege the member is not in shows an explicit em dash — "not assigned" is an answer');
-    ok(!names(f2).includes('Siege Members'),
-      'no member list is emitted for a party the member is not in');
-
-    // Neither layout seeded → the profile is exactly what it was before.
-    const neither = layoutsFor(docs, { polarity: false, siege: false });
-    eq(layoutFields(neither).length, 0,
-      'with neither layout seeded, /profile adds zero fields — unchanged from before');
-
-    // Half-seeded: parties exist, raid docs do not. The member IS assigned, so
-    // the block must still show rather than be hidden behind the raid count.
-    const halfSeeded = {
-      gvg: null,
-      polarity: resolveRaidLinkedParty(
-        { raids: [], parties: [{ partyId: 'x', raidId: 'gone', name: 'Party 1', memberIds: [ME] }], memberMap: buildMemberMap(docs) },
-        ME,
-      ),
-      siege: null,
-      hasPolarity: false || true, // what loadGuildLayouts computes: raids.length > 0 || !!polarity
-      hasSiege: false,
-    };
-    const f3 = layoutFields(halfSeeded);
-    eq(f3.find(f => f.name === 'Polarity Party').value, 'Party 1 (Unassigned)',
-      'a real assignment is shown even when the raid docs are missing');
-    pass('seeded-vs-assigned are treated as different questions');
-  }
-
-  // -------------------------------------------------------------------------
-  section('5. Both guilds — the full 19-field profile');
-  {
-    const docs = members(5);
-    const fields = buildProfileFields({
-      username: 'conrad', ign: 'Conrad', jobClass: 'Rune Knight', powerText: '152400',
-      kudos: { total: 12, rank: 3, totalRecipients: 40, givenToday: 1 }, kudosLimit: 5,
-      primary: layoutsFor(docs), secondary: layoutsFor(docs),
-    });
-
-    eq(fields.length, 19, 'both guilds, all three layouts, member in every one');
+    eq(fields.length, 13, 'both guilds, all three layouts');
     ok(fields.length <= EMBED_FIELD_COUNT_LIMIT,
       `${fields.length} fields is within Discord's ${EMBED_FIELD_COUNT_LIMIT}-field cap`);
 
     const mummy = names(fields).filter(n => n.endsWith(' (Mummy)'));
-    assert.deepStrictEqual(mummy, [
-      'Party Name (Mummy)', 'Party Members (Mummy)',
-      'Polarity Party (Mummy)', 'Polarity Members (Mummy)',
-      'Siege Party (Mummy)', 'Siege Members (Mummy)',
-    ], 'the secondary guild gets all three layouts, each suffixed');
+    assert.deepStrictEqual(mummy, ['Guild League (Mummy)', 'Polarity (Mummy)', 'Siege (Mummy)'],
+      'the secondary guild gets its own three-column row, each suffixed');
     checks += 1;
 
     eq(new Set(names(fields)).size, fields.length, 'no duplicate field names across the two guilds');
+
+    // Six columns, six inline, two clean rows of three.
+    const cols = fields.filter(f => f.isList);
+    eq(cols.length, 6, 'six layout columns in total');
+    for (const f of cols) ok(f.inline === true, `${f.name} is inline`);
 
     // At the real party size of 5 the budget pass must be inert.
     const before = fields.map(f => f.value);
@@ -297,19 +337,19 @@ const names = fields => fields.map(f => f.name);
       'at partySize 5 nothing is trimmed — a normal profile renders in full');
     checks += 1;
     ok(total < 1500, `a realistic full profile measures ${total} chars, far inside the cap`);
-    pass(`19 fields, ${total} chars, nothing trimmed`);
+    pass(`13 fields, two rows of three, ${total} chars, nothing trimmed`);
   }
 
   // -------------------------------------------------------------------------
   section('6. NEGATIVE CONTROL — the worst case really does blow the 6,000 cap');
   {
     // 40-member parties with 32-char display names (Discord's nickname limit)
-    // and a long class name. Six such lists is what the budget pass exists for.
+    // and a long class name. Six such columns is what the budget pass is for.
     const docs = members(40, { nameLen: 32, cls: 'Arch Bishop Transcendent' });
     const build = () => buildProfileFields({
+      ...baseArgs,
       username: 'conrad'.padEnd(32, 'x'), ign: 'Conrad'.padEnd(32, 'x'),
-      jobClass: 'Arch Bishop Transcendent', powerText: '152400',
-      kudos: { total: 12, rank: 3, totalRecipients: 40, givenToday: 1 }, kudosLimit: 5,
+      jobClass: 'Arch Bishop Transcendent',
       primary: layoutsFor(docs), secondary: layoutsFor(docs),
     });
 
@@ -318,8 +358,7 @@ const names = fields => fields.map(f => f.name);
 
     // The control: measure WITHOUT the budget pass.
     const untrimmed = build();
-    const lists = untrimmed.filter(f => f.isList);
-    eq(lists.length, 6, 'the worst case carries six member lists');
+    eq(untrimmed.filter(f => f.isList).length, 6, 'the worst case carries six columns');
     const rawTotal = embedChars(title, untrimmed, footer);
     ok(rawTotal > EMBED_TOTAL_LIMIT,
       `CONTROL: untrimmed the worst case measures ${rawTotal} chars, over the ${EMBED_TOTAL_LIMIT} cap ` +
@@ -338,12 +377,15 @@ const names = fields => fields.map(f => f.name);
       ok(f.name.length <= EMBED_FIELD_NAME_LIMIT, `"${f.name}" name within ${EMBED_FIELD_NAME_LIMIT} chars`);
     }
 
-    // Truncated lists must say they were truncated rather than quietly stop.
-    const trimmedList = fields.find(f => f.isList);
-    ok(/\+\d+ more$/.test(trimmedList.value),
+    // Trimming must not eat the heading — a column with no party name is unreadable.
+    const trimmed = fields.find(f => f.isList);
+    ok(trimmed.value.startsWith('**Party'), 'a trimmed column still leads with its party heading');
+    ok(/\+\d+ more$/.test(trimmed.value),
       'a truncated member list ends with a "+N more" trailer, so nothing vanishes silently');
 
-    // The floor holds even if the non-list content were pathological.
+    // The columns stay inline through the trim — the row must survive it.
+    for (const f of fields.filter(x => x.isList)) ok(f.inline === true, `${f.name} is still inline after trimming`);
+
     ok(MIN_LIST_CAP > 0 && MIN_LIST_CAP < LIST_FIELD_CAP, 'the per-list floor is a real, smaller bound');
     pass(`control fires at ${rawTotal} chars; the budget pass lands it at ${total}`);
   }
@@ -365,15 +407,15 @@ const names = fields => fields.map(f => f.name);
     const rosterExports = Object.keys(require('../roster/db'));
     for (const c of new Set(dbCalls)) ok(rosterExports.includes(c), `rosterDb.${c} actually exists on roster/db`);
 
-    // The mention must render without pinging — unchanged, but it is the kind
-    // of thing an edit to this file could quietly drop.
     ok(src.includes("allowedMentions: { parse: [] }"), 'the greeting mention still does not ping');
 
-    // toEmbedFields must strip the bookkeeping keys EmbedBuilder would reject.
-    const stripped = toEmbedFields([{ name: 'A', value: 'b', inline: false, isList: true, ctx: {} }]);
+    // toEmbedFields must strip the bookkeeping keys EmbedBuilder would reject,
+    // and must preserve inline — losing it would collapse the three-column row.
+    const stripped = toEmbedFields([{ name: 'A', value: 'b', inline: true, isList: true, ctx: {} }]);
     assert.deepStrictEqual(Object.keys(stripped[0]).sort(), ['inline', 'name', 'value'],
       'toEmbedFields hands EmbedBuilder only name/value/inline');
     checks += 1;
+    eq(stripped[0].inline, true, 'toEmbedFields preserves inline — the row depends on it');
     pass('read-only, and only real getters are called');
   }
 
