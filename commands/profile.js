@@ -5,30 +5,105 @@ const kudosDb = require('../kudos/db');
 // Clean green accent.
 const COLOR = 0x57F287;
 
-// Resolve a guild's party context for a user: the party they're in, its raid
-// name (or "Unassigned"), and the ordered member docs. Read-only; never throws.
-// Returns { party, raidName, members[] } or null when not in a party.
-async function resolveGuildParty(guild, userId) {
-  const [members, parties, raids] = await Promise.all([
-    rosterDb.getMembers(guild),
-    rosterDb.getParties(guild),
-    rosterDb.getRaidGroups(guild),
-  ]);
+// --- Embed size budget -------------------------------------------------------
+// Discord caps ONE embed at 6,000 characters counted across the title, every
+// field name, every field value and the footer. A profile can now carry up to
+// SIX member lists — GvG + Polarity + Siege, once for Daddy and again for
+// Mummy — and six fields at the 1,024 per-field cap is 6,144 on their own, i.e.
+// over the embed cap before a single other character is counted.
+//
+// So the lists share ONE budget instead of each policing itself: render them at
+// the per-field clamp, MEASURE the real embed, and only if that exceeds
+// SAFE_TOTAL re-render every list to an equal share of what is actually left.
+// At the current party size of 5 this never fires — a list is ~200 chars — but
+// it means a larger `settings.partySize`, or unusually long display names,
+// degrades the lists instead of turning /profile into a 400 from Discord.
+const SAFE_TOTAL = 5800;     // 6,000 cap minus headroom
+const LIST_FIELD_CAP = 1000; // < the 1,024 per-field cap, room for the trailer
+const MIN_LIST_CAP = 120;    // never squeeze a list below a couple of lines
+
+// Ordered member docs keyed by id. Shared by all three layouts of one guild.
+function buildMemberMap(members) {
+  return new Map(members.map(m => [m.userId, m]));
+}
+
+// GvG layout. `parties` carry memberIds; the raid is found by looking for the
+// raidGroup whose partyIds contains this party. Returns null when not in one.
+function resolveGvgParty({ parties, raidGroups, memberMap }, userId) {
   const party = parties.find(p => (p.memberIds || []).includes(userId));
   if (!party) return null;
-  const raid = raids.find(r => (r.partyIds || []).includes(party.partyId));
-  const memberMap = new Map(members.map(m => [m.userId, m]));
+  const raid = raidGroups.find(r => (r.partyIds || []).includes(party.partyId));
   return { party, raidName: raid ? raid.name : 'Unassigned', memberMap };
 }
 
-// "Party Name (RaidName)" for a resolved party context.
-function partyNameValue(ctx) {
-  if (!ctx) return '—';
-  return `${ctx.party.name} (${ctx.raidName})`;
+// POLARITY and SIEGE layouts. Their parties carry `raidId` directly, so the raid
+// is a straight lookup rather than the partyIds scan the GvG layout needs — the
+// two collections are linked differently, and that difference is why this is a
+// separate resolver rather than a flag on the one above.
+//
+// `kind` is carried through for polarity, where a "main" raid is the top-power
+// group and worth saying out loud; siege raids have no such split and pass
+// through as undefined.
+function resolveRaidLinkedParty({ raids, parties, memberMap }, userId) {
+  const party = parties.find(p => (p.memberIds || []).includes(userId));
+  if (!party) return null;
+  const raid = raids.find(r => r.raidId === party.raidId);
+  return {
+    party,
+    raidName: raid ? (raid.name || raid.raidId) : 'Unassigned',
+    kind: party.kind || raid?.kind,
+    memberMap,
+  };
 }
 
-// Numbered member list "<n>. <displayName> - <className>", slot order, 1024-cap.
-function partyMembersValue(ctx) {
+// Every layout for one guild in a single trip, sharing one members read and one
+// member map. Seven queries per guild rather than the three-per-layout the naive
+// shape would cost. Read-only throughout — all three collections are web-owned.
+async function loadGuildLayouts(guild, userId) {
+  const [members, parties, raidGroups, polRaids, polParties, siegeRaids, siegeParties] =
+    await Promise.all([
+      rosterDb.getMembers(guild),
+      rosterDb.getParties(guild),
+      rosterDb.getRaidGroups(guild),
+      rosterDb.getPolarityRaids(guild),
+      rosterDb.getPolarityParties(guild),
+      rosterDb.getSiegeRaids(guild),
+      rosterDb.getSiegeParties(guild),
+    ]);
+
+  const memberMap = buildMemberMap(members);
+  const polarity = resolveRaidLinkedParty({ raids: polRaids, parties: polParties, memberMap }, userId);
+  const siege = resolveRaidLinkedParty({ raids: siegeRaids, parties: siegeParties, memberMap }, userId);
+
+  return {
+    gvg: resolveGvgParty({ parties, raidGroups, memberMap }, userId),
+    polarity,
+    siege,
+    // Whether the layout EXISTS for this guild at all, which is a different
+    // question from whether this member is in it. A layout the web app has
+    // never seeded is omitted from the profile entirely; a seeded layout the
+    // member simply isn't in shows an explicit "—", because "not assigned" is
+    // an answer and a missing field is not.
+    //
+    // Resolving a party is enough on its own: if the parties are seeded but the
+    // raid docs are not, the member IS assigned and the block must still show
+    // (reading "Unassigned" for the raid). Gating on the raid count alone would
+    // hide a real assignment behind a half-seeded collection.
+    hasPolarity: polRaids.length > 0 || !!polarity,
+    hasSiege: siegeRaids.length > 0 || !!siege,
+  };
+}
+
+// "Party Name (RaidName)" for a resolved party context, plus a second line for a
+// polarity MAIN raid — the top-power group, in the wording /polarityraid uses.
+function partyNameValue(ctx) {
+  if (!ctx) return '—';
+  const head = `${ctx.party.name} (${ctx.raidName})`;
+  return ctx.kind === 'main' ? `${head}\nMain raid (top power)` : head;
+}
+
+// Numbered member list "<n>. <displayName> - <className>", slot order, capped.
+function partyMembersValue(ctx, cap = LIST_FIELD_CAP) {
   if (!ctx) return '—';
   const ids = ctx.party.memberIds || [];
   if (!ids.length) return '—';
@@ -39,7 +114,7 @@ function partyMembersValue(ctx) {
     const name = m?.displayName || m?.username || 'Unknown';
     const cls = m?.className || 'N/A';
     const line = `${i + 1}. ${name} - ${cls}`;
-    if (len + line.length + 1 > 1000) { // < 1024 cap, room for trailer
+    if (len + line.length + 1 > cap) {
       lines.push(`+${ids.length - i} more`);
       break;
     }
@@ -47,6 +122,102 @@ function partyMembersValue(ctx) {
     len += line.length + 1;
   }
   return lines.join('\n');
+}
+
+// The layout blocks for one guild, in board order: GvG, Polarity, Siege.
+// `suffix` labels the secondary guild's copy. The primary guild's GvG block is
+// built by the caller because it shares a three-column row with Job Class and
+// Power; every other block is uniform, so it is built here.
+// Entries tagged isList carry their ctx so the budget pass can re-render them.
+function layoutFields(layouts, suffix = '') {
+  const fields = [];
+  const label = base => `${base}${suffix}`;
+
+  if (suffix) {
+    fields.push({ name: label('Party Name'), value: partyNameValue(layouts.gvg), inline: false });
+    fields.push({ name: label('Party Members'), value: partyMembersValue(layouts.gvg), inline: false, isList: true, ctx: layouts.gvg });
+  }
+
+  if (layouts.hasPolarity) {
+    fields.push({ name: label('Polarity Party'), value: partyNameValue(layouts.polarity), inline: false });
+    if (layouts.polarity) {
+      fields.push({ name: label('Polarity Members'), value: partyMembersValue(layouts.polarity), inline: false, isList: true, ctx: layouts.polarity });
+    }
+  }
+
+  if (layouts.hasSiege) {
+    fields.push({ name: label('Siege Party'), value: partyNameValue(layouts.siege), inline: false });
+    if (layouts.siege) {
+      fields.push({ name: label('Siege Members'), value: partyMembersValue(layouts.siege), inline: false, isList: true, ctx: layouts.siege });
+    }
+  }
+
+  return fields;
+}
+
+// The whole field list, in display order. Split out of execute() so the sim
+// exercises the real assembly rather than a copy of it that can drift.
+//   primary/secondary — loadGuildLayouts() results, or null.
+function buildProfileFields({ username, ign, jobClass, powerText, kudos, kudosLimit, primary, secondary }) {
+  const fields = [
+    { name: 'Username', value: username, inline: false },
+    { name: 'In-game Name', value: ign, inline: false },
+  ];
+
+  // Kudos row (3 cols) — comes BEFORE party/class/power. Only when available.
+  if (kudos) {
+    const rankValue = kudos.total > 0 && kudos.rank
+      ? `#${kudos.rank} of ${kudos.totalRecipients}`
+      : 'Unranked';
+    fields.push(
+      { name: 'Kudos', value: `${kudos.total} received`, inline: true },
+      { name: 'Rank', value: rankValue, inline: true },
+      { name: 'Given Today', value: `${kudos.givenToday}/${kudosLimit}`, inline: true },
+    );
+  }
+
+  // 3-col row: Party Name | Job Class | Power, then the GvG member list.
+  const primaryGvg = primary ? primary.gvg : null;
+  fields.push(
+    { name: 'Party Name', value: partyNameValue(primaryGvg), inline: true },
+    { name: 'Job Class', value: jobClass, inline: true },
+    { name: 'Power', value: powerText, inline: true },
+    { name: 'Party Members', value: partyMembersValue(primaryGvg), inline: false, isList: true, ctx: primaryGvg },
+  );
+
+  // Polarity and Siege for the primary guild, then the secondary guild's full
+  // block (GvG + Polarity + Siege) when the member is in both.
+  if (primary) fields.push(...layoutFields(primary));
+  if (secondary) fields.push(...layoutFields(secondary, ' (Mummy)'));
+
+  return fields;
+}
+
+// Total characters Discord counts against the 6,000-per-embed cap.
+function embedChars(title, fields, footerText) {
+  let n = (title || '').length + (footerText || '').length;
+  for (const f of fields) n += f.name.length + f.value.length;
+  return n;
+}
+
+// Measure, then shrink only if we have to. Mutates `fields` in place and returns
+// the final measured size, so the command and the sim assert on the same number.
+function fitFieldsToEmbed(title, fields, footerText) {
+  const total = embedChars(title, fields, footerText);
+  const lists = fields.filter(f => f.isList);
+  if (total <= SAFE_TOTAL || !lists.length) return total;
+
+  const listChars = lists.reduce((s, f) => s + f.value.length, 0);
+  const nonList = total - listChars;
+  const per = Math.max(MIN_LIST_CAP, Math.floor((SAFE_TOTAL - nonList) / lists.length));
+  for (const f of lists) f.value = partyMembersValue(f.ctx, per);
+
+  return embedChars(title, fields, footerText);
+}
+
+// Drop the bookkeeping keys — EmbedBuilder validates what it is handed.
+function toEmbedFields(fields) {
+  return fields.map(f => ({ name: f.name, value: f.value, inline: !!f.inline }));
 }
 
 module.exports = {
@@ -82,7 +253,7 @@ module.exports = {
         // Left the server — use the user's global identity; no join date.
       }
 
-      // --- Roster: class, power, guild membership, party contexts -----------
+      // --- Roster: class, power, guild membership ---------------------------
       let memberDoc = null;
       let power = null;
       const guilds = []; // 'daddy' and/or 'mummy'
@@ -118,59 +289,43 @@ module.exports = {
       const primaryGuild = guilds.includes('daddy') ? 'daddy' : (guilds.includes('mummy') ? 'mummy' : null);
       const secondaryGuild = guilds.length === 2 ? 'mummy' : null;
 
-      let primaryCtx = null;
-      let secondaryCtx = null;
+      // --- All three layouts, per guild -------------------------------------
+      let primary = null;
+      let secondary = null;
       if (rosterDb.isReady()) {
         try {
-          if (primaryGuild) primaryCtx = await resolveGuildParty(primaryGuild, targetUser.id);
-          if (secondaryGuild) secondaryCtx = await resolveGuildParty(secondaryGuild, targetUser.id);
+          if (primaryGuild) primary = await loadGuildLayouts(primaryGuild, targetUser.id);
+          if (secondaryGuild) secondary = await loadGuildLayouts(secondaryGuild, targetUser.id);
         } catch (e) {
-          console.warn('[profile] party resolution failed:', e?.message || e);
+          console.warn('[profile] layout resolution failed:', e?.message || e);
         }
       }
 
       // --- Build embed ------------------------------------------------------
-      const embed = new EmbedBuilder()
-        .setTitle('Your Profile')
-        .setColor(COLOR)
-        .setThumbnail(avatarURL);
-
-      embed.addFields(
-        { name: 'Username', value: username, inline: false },
-        { name: 'In-game Name', value: ign, inline: false },
-      );
-
-      // Kudos row (3 cols) — comes BEFORE party/class/power. Only when available.
-      if (kudos) {
-        const rankValue = kudos.total > 0 && kudos.rank
-          ? `#${kudos.rank} of ${kudos.totalRecipients}`
-          : 'Unranked';
-        embed.addFields(
-          { name: 'Kudos', value: `${kudos.total} received`, inline: true },
-          { name: 'Rank', value: rankValue, inline: true },
-          { name: 'Given Today', value: `${kudos.givenToday}/${kudosDb.DAILY_LIMIT}`, inline: true },
-        );
-      }
-
-      embed.addFields(
-        // 3-col row: Party Name | Job Class | Power
-        { name: 'Party Name', value: partyNameValue(primaryCtx), inline: true },
-        { name: 'Job Class', value: jobClass, inline: true },
-        { name: 'Power', value: powerText, inline: true },
-        { name: 'Party Members', value: partyMembersValue(primaryCtx), inline: false },
-      );
-
-      // Both-guilds: append the secondary guild's party block.
-      if (secondaryGuild) {
-        embed.addFields(
-          { name: 'Party Name (Mummy)', value: partyNameValue(secondaryCtx), inline: false },
-          { name: 'Party Members (Mummy)', value: partyMembersValue(secondaryCtx), inline: false },
-        );
-      }
-
+      const title = 'Your Profile';
       const joinDate = joinedAt ? new Date(joinedAt).toDateString() : 'Unknown';
-      embed.setFooter({ text: `Member Since: ${joinDate}`, iconURL: avatarURL });
-      embed.setTimestamp();
+      const footerText = `Member Since: ${joinDate}`;
+
+      const fields = buildProfileFields({
+        username,
+        ign,
+        jobClass,
+        powerText,
+        kudos,
+        kudosLimit: kudosDb.DAILY_LIMIT,
+        primary,
+        secondary,
+      });
+
+      fitFieldsToEmbed(title, fields, footerText);
+
+      const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setColor(COLOR)
+        .setThumbnail(avatarURL)
+        .addFields(toEmbedFields(fields))
+        .setFooter({ text: footerText, iconURL: avatarURL })
+        .setTimestamp();
 
       await interaction.editReply({
         content: `Hi <@${targetUser.id}>: Here is your profile:`,
@@ -182,4 +337,21 @@ module.exports = {
       await interaction.editReply("Couldn't load that profile right now — please try again in a moment.");
     }
   },
+};
+
+// Exported for scripts/sim-profile.js — not used by the command itself.
+module.exports._internals = {
+  resolveGvgParty,
+  resolveRaidLinkedParty,
+  buildMemberMap,
+  partyNameValue,
+  partyMembersValue,
+  layoutFields,
+  buildProfileFields,
+  toEmbedFields,
+  embedChars,
+  fitFieldsToEmbed,
+  SAFE_TOTAL,
+  LIST_FIELD_CAP,
+  MIN_LIST_CAP,
 };
