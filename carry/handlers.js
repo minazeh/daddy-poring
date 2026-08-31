@@ -4,7 +4,7 @@
 // Spec: docs/CARRY_SYSTEM_SPEC.md
 //
 // Buyer flow (spec §7):
-//   panel button -> tier select -> run select -> [Priest declaration] ->
+//   panel button -> tier select -> run select ->
 //   IGN modal -> payment-method select -> SEAT GOES PENDING (conditional take)
 //   -> DM pointing the buyer at the RUNNER -> public board updates ->
 //   pending board entry.
@@ -14,9 +14,9 @@
 // they can tap through. No creator on the run means no mention: the buyer is
 // told an officer will follow up instead (spec §7 step 7).
 //
-// Officer flow: Mark Paid (confirms the seat AND, for a self-declared Priest,
-// the class check rides along with the same click — spec §5), Release, or
-// Cancel. Cancel is the ONLY way to void a PAID seat (spec §6.1).
+// Officer flow: Mark Paid (confirms the seat), Release, or Cancel. Cancel is
+// the ONLY way to void a PAID seat (spec §6.1). There is no class check to
+// ride along any more: every seat is open to every class.
 //
 // EVERY seat mutation goes through carry/db.js's conditional updates. There is
 // no in-memory seat map to fall out of sync — see the header of carry/state.js.
@@ -204,7 +204,7 @@ function buildRunEmbed(run) {
   }
 
   const seatLines = run.seats.map(seat => {
-    const label = seat.priestOnly ? `Seat ${seat.index + 1} 🙏 *Priest seat*` : `Seat ${seat.index + 1}`;
+    const label = `Seat ${seat.index + 1}`;
     if (seat.status === SEAT_STATUS.PAID) {
       return `${label} — ✅ **${defuseMentions(seat.displayName)}**`;
     }
@@ -220,7 +220,7 @@ function buildRunEmbed(run) {
     .addFields(
       { name: 'Price',      value: `${priceLabel(tier)} per slot`,                     inline: true },
       { name: 'Slots',      value: `${taken}/${total}`,                                inline: true },
-      { name: 'Priest seat', value: priestSeatSummary(run),                            inline: true },
+      { name: 'Open to',    value: 'Any class',                                        inline: true },
       { name: '🏃 Runner',   value: runnerLine(run),                                   inline: false },
       { name: '🕒 Start',   value: `<t:${epoch}:F>\n<t:${epoch}:R>\n${formatGmt7(run.startAt)} — ${TIME_ZONE_DISPLAY}`, inline: false },
       { name: 'Seats',      value: seatLines.join('\n') || '_none_',                   inline: false },
@@ -245,14 +245,6 @@ function runnerLine(run) {
   return mention
     ? `${mention} — DM them to arrange payment once you've booked`
     : '_Not set — an officer will arrange payment with you_';
-}
-
-function priestSeatSummary(run) {
-  const seat = run.seats.find(s => s.priestOnly);
-  if (!seat) return '—';
-  if (seat.status === SEAT_STATUS.PAID) return '✅ Taken';
-  if (seat.status === SEAT_STATUS.PENDING) return '⏳ On hold';
-  return '🟢 Open (Priest only)';
 }
 
 /**
@@ -333,12 +325,6 @@ function buildBookingEmbed(booking, run) {
       title = '⏳ AWAITING PAYMENT'; color = COLORS.PENDING;
   }
 
-  const priestLine = booking.priestSeat
-    ? (booking.priestRoleVerified
-      ? '🙏 Priest seat — **role verified** (holds the Priest role)'
-      : '🙏 Priest seat — ⚠️ **SELF-DECLARED**, verify the class before marking paid')
-    : '—';
-
   const embed = new EmbedBuilder()
     .setTitle(`${title} — ${tier.label}`)
     .setColor(color)
@@ -347,10 +333,9 @@ function buildBookingEmbed(booking, run) {
       { name: 'IGN',     value: defuseMentions(booking.ign) || '—',                             inline: true },
       { name: 'Price',   value: `$${booking.priceUsd}`,                                         inline: true },
       { name: 'Payment', value: method ? `${method.emoji} ${method.label}` : String(booking.paymentMethod), inline: true },
-      { name: 'Seat',    value: `Seat ${booking.seatIndex + 1}${booking.priestSeat ? ' (Priest)' : ''}`,     inline: true },
+      { name: 'Seat',    value: `Seat ${booking.seatIndex + 1}`,                                    inline: true },
       { name: 'Runner',  value: runnerMention(run) ? `${runnerMention(run)} — payment lands in their DMs` : '⚠️ **none on this run** — arrange payment yourself', inline: true },
       { name: 'Run',     value: run ? runLabel(run) : booking.runId,                            inline: false },
-      { name: 'Priest check', value: priestLine,                                                inline: false },
     );
 
   if (booking.status === BOOKING_STATUS.PENDING) {
@@ -470,7 +455,7 @@ async function handlePanelButton(interaction) {
       const tier = TIERS[key];
       return new StringSelectMenuOptionBuilder()
         .setLabel(`${tier.label} — $${tier.priceUsd}`)
-        .setDescription(`${tier.slots} slots per run, 1 of them a Priest seat`)
+        .setDescription(`${tier.slots} slots per run, open to any class`)
         .setValue(key);
     }));
 
@@ -516,11 +501,9 @@ async function renderRunPicker(interaction, tierKey, header) {
     .setPlaceholder('Choose a time slot')
     .addOptions(runs.slice(0, MAX_SELECT_OPTIONS).map(run => {
       const { taken, total } = seatCounts(run);
-      const priest = run.seats.find(s => s.priestOnly);
-      const onlyPriestLeft = total - taken === 1 && priest?.status === SEAT_STATUS.OPEN;
       return new StringSelectMenuOptionBuilder()
         .setLabel(formatGmt7(run.startAt).slice(0, 100))
-        .setDescription(`${total - taken} of ${total} slot(s) left${onlyPriestLeft ? ' — Priest seat only' : ''}`.slice(0, 100))
+        .setDescription(`${total - taken} of ${total} slot(s) left`.slice(0, 100))
         .setValue(run._id);
     }));
 
@@ -532,9 +515,10 @@ async function renderRunPicker(interaction, tierKey, header) {
   else await interaction.update(payload);
 }
 
-// 4/5. Run picked -> resolve the seat -> Priest declaration if needed, else
-// straight to the IGN modal. A select IS allowed to open a modal; only a modal
-// submit is not.
+// 4/5. Run picked -> resolve the seat -> straight to the IGN modal. A select IS
+// allowed to open a modal; only a modal submit is not.
+//
+// Every seat is open to every class, so a full run is the ONLY refusal left.
 async function handleRunSelect(interaction, tierKey) {
   const runId = interaction.values[0];
   const run = await db.getRun(runId);
@@ -544,62 +528,18 @@ async function handleRunSelect(interaction, tierKey) {
     return;
   }
 
-  const profile = cs.classProfile(interaction.member);
-  const pick = cs.selectSeat(run, profile);
+  const pick = cs.selectSeat(run);
 
-  if (!pick.ok && pick.reason === 'full') {
+  if (!pick.ok) {
     await renderRunPicker(interaction, tierKey, '⚠️ That run just filled up. **Pick another time slot.**');
     return;
   }
-  if (!pick.ok && pick.reason === 'wrong-class') {
-    // They have a class role and it isn't Priest — no self-declare path (§11).
-    await interaction.update({
-      content:
-        `❌ The only slot left on that run is the **Priest seat**, and your class ` +
-        `(${pick.className}) can't take it. Pick another time slot, or wait for the next run.`,
-      components: [],
-    });
-    return;
-  }
-
-  if (pick.needsDeclaration) {
-    // Buyer holds NO class role — an outside buyer. They may self-declare, and
-    // the officer verifies it with the same click that confirms payment (§5).
-    await interaction.update({
-      content:
-        `🙏 The only slot left on that run is the **Priest seat**.\n\n` +
-        `You don't have a class role here, so we can't check it automatically. ` +
-        `If you are a Priest, confirm below — an officer will verify it when they ` +
-        `confirm your payment. If you're not a Priest, just close this and pick another run.`,
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`${IDS.PRIEST_DECLARE}:${run._id}:${pick.seatIndex}`)
-          .setLabel('I confirm I am a Priest')
-          .setStyle(ButtonStyle.Primary),
-      )],
-    });
-    return;
-  }
-
-  await interaction.showModal(buildIgnModal(run._id, pick.seatIndex, false));
+  await interaction.showModal(buildIgnModal(run._id, pick.seatIndex));
 }
 
-// The self-declaration button — a Button MAY open a modal.
-async function handlePriestDeclare(interaction, runId, seatIndex) {
-  const run = await db.getRun(runId);
-  if (!run || run.status !== RUN_STATUS.OPEN || run.seats[seatIndex]?.status !== SEAT_STATUS.OPEN) {
-    await interaction.update({
-      content: '⚠️ That Priest seat was taken while you were deciding. Start again from the panel.',
-      components: [],
-    });
-    return;
-  }
-  await interaction.showModal(buildIgnModal(runId, seatIndex, true));
-}
-
-function buildIgnModal(runId, seatIndex, declaredPriest) {
+function buildIgnModal(runId, seatIndex) {
   const modal = new ModalBuilder()
-    .setCustomId(`${IDS.IGN_MODAL}:${runId}:${seatIndex}:${declaredPriest ? 1 : 0}`)
+    .setCustomId(`${IDS.IGN_MODAL}:${runId}:${seatIndex}`)
     .setTitle('Your in-game name');
 
   modal.addComponents(
@@ -618,7 +558,7 @@ function buildIgnModal(runId, seatIndex, declaredPriest) {
 
 // 6. IGN captured -> payment-method select. STILL NO SEAT CLAIMED — the draft
 // lives in memory only and losing it to a restart costs a re-click, nothing else.
-async function handleIgnModal(interaction, runId, seatIndex, declaredPriest) {
+async function handleIgnModal(interaction, runId, seatIndex) {
   const ign = interaction.fields.getTextInputValue(FIELDS.IGN).trim();
   if (!ign.length) {
     await interaction.reply(ephemeral('Please enter your in-game name and try again.'));
@@ -644,8 +584,6 @@ async function handleIgnModal(interaction, runId, seatIndex, declaredPriest) {
     seatIndex,
     tierKey: run.tier,
     ign,
-    declaredPriest,
-    priestRoleVerified: cs.classProfile(interaction.member).isPriest,
   });
 
   const select = new StringSelectMenuBuilder()
@@ -700,9 +638,6 @@ async function handlePaySelect(interaction, runId, seatIndex) {
   const result = await cs.claimSeat({
     run,
     seatIndex: Number(seatIndex),
-    priestSeat: Boolean(run.seats[seatIndex]?.priestOnly),
-    declaredPriest: draft.declaredPriest,
-    priestRoleVerified: draft.priestRoleVerified,
     userId: interaction.user.id,
     username: interaction.user.username,
     displayName: displayNameOf(interaction),
@@ -1037,15 +972,6 @@ async function route(interaction) {
       await handlePanelButton(interaction);
       return true;
     }
-    if (id.startsWith(`${IDS.PRIEST_DECLARE}:`)) {
-      // carry:priest:<runId prefix>:<runNumber>:<seatIndex>
-      // runId itself contains a ':' (carryrun:0007), so parse from the END.
-      const parts = id.split(':');
-      const seatIndex = Number(parts[parts.length - 1]);
-      const runId = parts.slice(2, parts.length - 1).join(':');
-      await handlePriestDeclare(interaction, runId, seatIndex);
-      return true;
-    }
     if (id.startsWith(`${IDS.MARK_PAID}:`)) {
       await handleMarkPaid(interaction, id.slice(`${IDS.MARK_PAID}:`.length));
       return true;
@@ -1089,12 +1015,17 @@ async function route(interaction) {
     if (!id.startsWith('carry:')) return false;
 
     if (id.startsWith(`${IDS.IGN_MODAL}:`)) {
-      // carry:ign:<runId>:<seatIndex>:<declared> — parse from the END.
+      // carry:ign:<runId>:<seatIndex> — runId contains a ':', parse from the END.
+      //
+      // A modal opened just BEFORE the Priest removal deployed carries the old
+      // five-segment form (carry:ign:<runId>:<seatIndex>:<declared>). Parsed
+      // here that yields a runId of '<realRunId>:<seatIndex>', which is not a
+      // valid run id, so getRun returns null and the buyer is told to start
+      // again. It can never resolve to a real run and claim the wrong seat.
       const parts = id.split(':');
-      const declared = parts[parts.length - 1] === '1';
-      const seatIndex = Number(parts[parts.length - 2]);
-      const runId = parts.slice(2, parts.length - 2).join(':');
-      await handleIgnModal(interaction, runId, seatIndex, declared);
+      const seatIndex = Number(parts[parts.length - 1]);
+      const runId = parts.slice(2, parts.length - 1).join(':');
+      await handleIgnModal(interaction, runId, seatIndex);
       return true;
     }
     return false;

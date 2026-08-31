@@ -13,7 +13,7 @@
 // RUNS ARE CREATED AND REMOVED MANUALLY. There is no recurring template and no
 // auto-rollover (Conrad, 2026-08-24).
 //
-// `create` takes tier and date/time only — CAPACITY AND THE PRIEST SEAT FOLLOW
+// `create` takes tier and date/time only — CAPACITY FOLLOWS
 // FROM THE TIER, so they are never entered by hand and can't drift from the
 // product spec (§3).
 //
@@ -62,7 +62,7 @@ module.exports = {
         .addStringOption(opt =>
           opt
             .setName('tier')
-            .setDescription('Which carry tier — capacity and the Priest seat follow from this.')
+            .setDescription('Which carry tier — capacity follows from this.')
             .setRequired(true)
             .addChoices(...TIER_KEYS.map(key => ({
               name: `${TIERS[key].label} — $${TIERS[key].priceUsd} · ${TIERS[key].slots} slots`,
@@ -187,7 +187,7 @@ module.exports = {
       const ts = Math.floor(startAt.getTime() / 1000);
       await interaction.editReply(
         `✅ Run created: **${handlers.runLabel(run)}**\n` +
-        `Starts <t:${ts}:F> (<t:${ts}:R>) · **${tier.slots} slots**, one of them the **Priest seat**.\n` +
+        `Starts <t:${ts}:F> (<t:${ts}:R>) · **${tier.slots} slots**, open to any class.\n` +
         `Board message posted${run.boardMessageId ? '' : ' — ⚠️ but the board message could not be posted; check the board channel permissions'}.\n` +
         `Run id: \`${run._id}\``,
       );
@@ -206,11 +206,8 @@ module.exports = {
       }
       const lines = runs.map(run => {
         const ts = run.startEpochSecs;
-        const priest = run.seats.find(s => s.priestOnly);
-        const priestState = priest
-          ? (priest.status === SEAT_STATUS.OPEN ? 'Priest seat open' : `Priest seat ${priest.status}`)
-          : 'no Priest seat';
-        return `• **${describeRun(run)}** — <t:${ts}:R> · ${priestState}\n  id: \`${run._id}\``;
+        const { taken, total } = handlers.seatCounts(run);
+        return `• **${describeRun(run)}** — <t:${ts}:R> · ${total - taken}/${total} open\n  id: \`${run._id}\``;
       });
       let content = `🎟️ **Live carry runs (${runs.length})** — all times ${TIME_ZONE_DISPLAY}\n` + lines.join('\n');
       if (content.length > 2000) content = content.slice(0, 1997) + '…';

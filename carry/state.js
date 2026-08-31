@@ -28,9 +28,6 @@ const {
   SEAT_STATUS,
   PENDING_HOLD_MS,
   DRAFT_TTL_MS,
-  PRIEST_ROLE_ID,
-  CLASS_ROLE_IDS,
-  CLASS_ROLE_BY_ID,
 } = require('./constants');
 
 // ---------------------------------------------------------------------------
@@ -98,53 +95,28 @@ function armedReleaseCount() {
 // ---------------------------------------------------------------------------
 // 3. Seat selection.
 //
-// There is no seat picker in the buyer flow (spec §7) — the seat is assigned.
-// The rule is: LOWEST OPEN GENERAL SEAT FIRST, and the Priest seat only when
-// nothing else is left. That is what makes spec §7.4 ("Priest declaration —
-// only shown when the buyer is taking the Priest seat") and spec §11
-// ("non-Priest attempting the Priest seat with a class role that isn't Priest —
-// refused, no self-declare path offered") describe the same moment.
+// There is no seat picker in the buyer flow (spec §7) — the seat is assigned:
+// LOWEST OPEN SEAT FIRST.
+//
+// EVERY SEAT IS OPEN TO EVERY CLASS (Conrad, 2026-08-31). The class-gated
+// Priest seat is gone, and with it the self-declaration step and the
+// wrong-class refusal — so the only reason this can fail is a full run, and
+// the buyer's roles are never consulted.
+//
+// `priestOnly` is deliberately NOT consulted. Runs created before the change
+// still carry it on their last seat; ignoring it is what makes that seat
+// sellable to anyone without a migration.
 //
 // Returns one of:
-//   { ok: true,  seatIndex, priestSeat, needsDeclaration }
-//   { ok: false, reason: 'full' | 'wrong-class', className }
+//   { ok: true,  seatIndex }
+//   { ok: false, reason: 'full' }
 // ---------------------------------------------------------------------------
-function classProfile(member) {
-  const cache = member?.roles?.cache;
-  if (!cache) return { isPriest: false, hasClassRole: false, className: null };
-  const isPriest = Boolean(cache.has?.(PRIEST_ROLE_ID));
-  const held = CLASS_ROLE_IDS.filter(id => cache.has?.(id));
-  return {
-    isPriest,
-    hasClassRole: held.length > 0,
-    className: held.length ? held.map(id => CLASS_ROLE_BY_ID[id] || id).join(' / ') : null,
-  };
-}
-
-function selectSeat(run, profile) {
-  const open = run.seats.filter(s => s.status === SEAT_STATUS.OPEN);
+function selectSeat(run) {
+  const open = run.seats
+    .filter(s => s.status === SEAT_STATUS.OPEN)
+    .sort((a, b) => a.index - b.index);
   if (!open.length) return { ok: false, reason: 'full' };
-
-  const general = open.filter(s => !s.priestOnly).sort((a, b) => a.index - b.index);
-  if (general.length) {
-    return { ok: true, seatIndex: general[0].index, priestSeat: false, needsDeclaration: false };
-  }
-
-  // Only the Priest seat is left.
-  const priestSeat = open.find(s => s.priestOnly);
-  if (!priestSeat) return { ok: false, reason: 'full' };
-
-  if (profile.isPriest) {
-    return { ok: true, seatIndex: priestSeat.index, priestSeat: true, needsDeclaration: false };
-  }
-  if (profile.hasClassRole) {
-    // They have a class role; it just isn't Priest. No self-declare path —
-    // the server already knows what they are (spec §11).
-    return { ok: false, reason: 'wrong-class', className: profile.className };
-  }
-  // No class role at all — an outside buyer. They may self-declare, and the
-  // officer verifies it with the same click that confirms payment (spec §5).
-  return { ok: true, seatIndex: priestSeat.index, priestSeat: true, needsDeclaration: true };
+  return { ok: true, seatIndex: open[0].index };
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +146,7 @@ function seatKey(runId, seatIndex) {
  * @returns {Promise<{ok: true, booking: object} | {ok: false, reason: 'taken'|'store'}>}
  */
 async function claimSeat({
-  run, seatIndex, priestSeat, declaredPriest, priestRoleVerified,
+  run, seatIndex,
   userId, username, displayName, ign, paymentMethod, guildId,
 }) {
   const key = seatKey(run._id, seatIndex);
@@ -197,14 +169,11 @@ async function claimSeat({
       tier: run.tier,
       priceUsd: run.priceUsd,
       seatIndex,
-      priestSeat,
       guildId,
       userId,
       username,
       displayName,
       ign,
-      declaredPriest,
-      priestRoleVerified,
       paymentMethod,
       pendingUntil,
     });
@@ -217,7 +186,6 @@ async function claimSeat({
       userId,
       displayName,
       ign,
-      declaredPriest,
     });
 
     if (!won) {
@@ -252,7 +220,6 @@ module.exports = {
   cancelRelease,
   armedReleaseCount,
   // seat selection
-  classProfile,
   selectSeat,
   // the claim
   claimSeat,

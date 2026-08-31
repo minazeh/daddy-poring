@@ -280,6 +280,17 @@ function member(roleIds = []) {
   return { roles: { cache: { has: (id) => roleIds.includes(id) } }, displayName: 'Someone' };
 }
 
+// A bare button interaction, for asserting a customId is NOT routed.
+function btnLike(customId) {
+  return {
+    customId,
+    isButton: () => true,
+    isStringSelectMenu: () => false,
+    isModalSubmit: () => false,
+    async reply() {}, async update() {}, async deferUpdate() {}, async editReply() {},
+  };
+}
+
 const PRIEST = '1518174089817227415';
 const KNIGHT = '1518174089087422506';
 
@@ -318,9 +329,35 @@ function paySelectInteraction(client, { userId, runId, seatIndex, method = 'gcas
   };
 }
 
+// A run/timeslot select click. Carries the buyer's ROLES, so the "every class
+// gets the same seat" claim can be driven through handlers.route() end to end
+// rather than asserted against the pure resolver alone.
+function runSelectInteraction({ userId, runId, tierKey = 'SS', roles = [] }) {
+  const shown = [];
+  const modals = [];
+  return {
+    customId: `carry:run:${tierKey}`,
+    values: [runId],
+    user: { id: userId, username: userId },
+    member: member(roles),
+    guildId: 'G1',
+    shown,
+    modals,
+    deferred: false,
+    replied: false,
+    isButton: () => false,
+    isStringSelectMenu: () => true,
+    isModalSubmit: () => false,
+    async showModal(m) { modals.push(m.toJSON ? m.toJSON() : m); },
+    async update(payload) { shown.push(payload); },
+    async editReply(payload) { shown.push(payload); },
+    async reply(payload) { shown.push(payload); },
+  };
+}
+
 // Drive the real buyer flow from "IGN captured" to "seat pending + DM sent".
 async function bookThroughPaySelect(client, run, { userId, seatIndex = 0, ign = 'Tester', method = 'gcash' }) {
-  cs.setDraft(userId, { runId: run._id, seatIndex, tierKey: run.tier, ign, declaredPriest: false, priestRoleVerified: false });
+  cs.setDraft(userId, { runId: run._id, seatIndex, tierKey: run.tier, ign });
   const interaction = paySelectInteraction(client, { userId, runId: run._id, seatIndex, method });
   const claimed = await handlers.route(interaction);
   const dm = [...client.dms].reverse().find(d => d.userId === userId) || null;
@@ -328,14 +365,11 @@ async function bookThroughPaySelect(client, run, { userId, seatIndex = 0, ign = 
   return { claimed, dm, ephemeralText };
 }
 
-async function buy(run, { userId, ign = 'Tester', seatIndex, priestSeat = false, declaredPriest = false, priestRoleVerified = false, method = 'gcash' }) {
+async function buy(run, { userId, ign = 'Tester', seatIndex, method = 'gcash' }) {
   const fresh = await db.getRun(run._id);
   return cs.claimSeat({
     run: fresh,
     seatIndex,
-    priestSeat,
-    declaredPriest,
-    priestRoleVerified,
     userId,
     username: userId,
     displayName: userId,
@@ -348,58 +382,131 @@ async function buy(run, { userId, ign = 'Tester', seatIndex, priestSeat = false,
 // ===========================================================================
 async function main() {
   // -------------------------------------------------------------------------
-  section('A. product shape — capacity and the Priest seat follow from the tier');
+  section('A. product shape — capacity follows from the tier, every seat open to all');
   // -------------------------------------------------------------------------
   const ssSeats = db.buildSeats(TIERS.SS);
   const sssSeats = db.buildSeats(TIERS.SSS);
   assert(ssSeats.length === 4, 'Guaranteed SS has 4 slots');
   assert(sssSeats.length === 3, 'Guaranteed SSS has 3 slots');
-  assert(ssSeats.filter(s => s.priestOnly).length === 1, 'SS has exactly one Priest seat');
-  assert(sssSeats.filter(s => s.priestOnly).length === 1, 'SSS has exactly one Priest seat');
+  assert(ssSeats.every(s => s.priestOnly === undefined), 'NO SS seat is class-gated any more');
+  assert(sssSeats.every(s => s.priestOnly === undefined), 'NO SSS seat is class-gated any more');
+  assert(TIERS.SS.priestSeatIndex === undefined && TIERS.SSS.priestSeatIndex === undefined,
+    'the tiers no longer carry a priestSeatIndex');
+  assert(cs.classProfile === undefined, 'the class-profile helper is gone from carry/state');
   assert(TIERS.SS.priceUsd === 5 && TIERS.SSS.priceUsd === 10, 'prices are $5 / $10');
   assert(ssSeats.every(s => s.status === SEAT_STATUS.OPEN), 'a new run starts wholly open');
 
   // -------------------------------------------------------------------------
-  section('B. seat selection — the Priest seat is sellable but class-gated (spec §5, §11)');
+  section('B. seat selection — EVERY SEAT IS OPEN TO EVERY CLASS');
   // -------------------------------------------------------------------------
   resetStore();
   {
     const run = await newRun('SS');
     const empty = await db.getRun(run._id);
 
-    const first = cs.selectSeat(empty, cs.classProfile(member([])));
-    assert(first.ok && first.seatIndex === 0 && !first.priestSeat && !first.needsDeclaration,
-      'an empty run gives seat 1 (a general seat), no Priest question asked');
+    // selectSeat takes ONLY the run now — there is no member argument left to
+    // pass, which is the strongest available form of "the buyer's class is
+    // never consulted".
+    assert(cs.selectSeat.length === 1, 'selectSeat takes one argument: the run');
 
-    // Fill the three general seats.
+    const first = cs.selectSeat(empty);
+    assert(first.ok && first.seatIndex === 0, 'an empty run gives seat 1');
+    assert(first.priestSeat === undefined && first.needsDeclaration === undefined,
+      'no priestSeat / needsDeclaration flags survive on the result');
+
+    // Fill the first three seats.
     for (let i = 0; i < 3; i++) {
       const r = await buy(run, { userId: `buyer${i}`, seatIndex: i });
-      assert(r.ok, `general seat ${i + 1} sold`);
+      assert(r.ok, `seat ${i + 1} sold`);
     }
     const nearlyFull = await db.getRun(run._id);
 
-    const asPriest = cs.selectSeat(nearlyFull, cs.classProfile(member([PRIEST])));
-    assert(asPriest.ok && asPriest.priestSeat && !asPriest.needsDeclaration,
-      'a member holding the Priest role takes the Priest seat with NO declaration step');
+    // THE CHANGE: the last seat — which used to be Priest-only — is now just a
+    // seat. A Knight takes it, which the old code refused outright (old §11).
+    const last = cs.selectSeat(nearlyFull);
+    assert(last.ok && last.seatIndex === 3, 'the last seat is offered, not withheld');
 
-    const asKnight = cs.selectSeat(nearlyFull, cs.classProfile(member([KNIGHT])));
-    assert(!asKnight.ok && asKnight.reason === 'wrong-class',
-      'a Knight is REFUSED the Priest seat — and is offered no self-declare path (§11)');
-    assert(asKnight.className === 'Knight', 'the refusal names the class it actually read');
-
-    const asOutsider = cs.selectSeat(nearlyFull, cs.classProfile(member([])));
-    assert(asOutsider.ok && asOutsider.priestSeat && asOutsider.needsDeclaration,
-      'an outside buyer with NO class role may self-declare Priest (§5)');
-
-    const r = await buy(run, { userId: 'priestbuyer', seatIndex: asOutsider.seatIndex, priestSeat: true, declaredPriest: true });
-    assert(r.ok, 'the declared Priest takes the Priest seat');
-    assert(r.booking.declaredPriest === true && r.booking.priestRoleVerified === false,
-      'the declaration is RECORDED ON THE BOOKING for the officer to verify at Mark Paid');
+    const r = await buy(run, { userId: 'knightbuyer', seatIndex: last.seatIndex });
+    assert(r.ok, 'A KNIGHT TAKES THE SEAT THAT USED TO BE PRIEST-ONLY');
+    assert(r.booking.priestSeat === undefined, 'the booking carries no priestSeat flag');
+    assert(r.booking.declaredPriest === undefined && r.booking.priestRoleVerified === undefined,
+      'no declaration fields are written to the ledger any more');
 
     const full = await db.getRun(run._id);
-    assert(cs.selectSeat(full, cs.classProfile(member([]))).reason === 'full', 'a full run reports full');
+    assert(cs.selectSeat(full).reason === 'full', 'a full run reports full');
+
+    // BACKWARD COMPATIBILITY — runs created BEFORE this change still carry
+    // priestOnly:true on their last seat in Mongo. Nothing migrates them;
+    // selectSeat simply ignores the field, and THAT is what makes the seat
+    // sellable to anyone. If this assertion ever fails, every run that was
+    // already open at deploy time silently keeps a locked seat.
+    //
+    // CLONE the seats before shaping them. The in-memory store hands back a
+    // LIVE reference, so mutating what getRun returned edited the run itself
+    // and quietly reopened a seat on a run a later assertion expects to be
+    // full. (Real Mongo returns a fresh object; the fake does not. This was
+    // caught by the "full run is filtered out" assertion going red, not by
+    // reading the code.)
+    const stored = await db.getRun(run._id);
+    const legacy = { ...stored, seats: stored.seats.map(seat => ({ ...seat })) };
+    legacy.seats[0].status = SEAT_STATUS.PAID;
+    legacy.seats[1].status = SEAT_STATUS.PAID;
+    legacy.seats[2].status = SEAT_STATUS.PAID;
+    legacy.seats[3].status = SEAT_STATUS.OPEN;
+    legacy.seats[3].priestOnly = true;   // the pre-change shape
+    const onLegacy = cs.selectSeat(legacy);
+    assert(onLegacy.ok && onLegacy.seatIndex === 3,
+      'a LEGACY run with priestOnly:true still offers that seat — no migration needed');
+
+    const untouched = await db.getRun(run._id);
+    assert(untouched.seats.every(seat => seat.status !== SEAT_STATUS.OPEN),
+      'shaping the legacy fixture did not mutate the stored run');
+
+
     const openForTier = await db.listOpenRunsForTier('SS');
     assert(openForTier.length === 0, 'a FULL RUN IS FILTERED OUT of the timeslot picker (§7.3)');
+
+    // END TO END through the REAL router, not the resolver alone: a KNIGHT and
+    // a PRIEST each pick a run whose ONLY open seat is the one that used to be
+    // Priest-only. Both must be shown the IGN modal. Under the old code the
+    // Knight got a refusal and the Priest got a different path, so this is the
+    // assertion that would go red if any class check crept back in.
+    for (const [who, roles] of [['knight', [KNIGHT]], ['priest', [PRIEST]], ['noclass', []]]) {
+      const r2 = await newRun('SS');
+      for (let i = 0; i < 3; i++) await buy(r2, { userId: `${who}-pre${i}`, seatIndex: i });
+
+      const ix = runSelectInteraction({ userId: who, runId: r2._id, tierKey: 'SS', roles });
+      const handled = await handlers.route(ix);
+      assert(handled, `${who}: the run select is routed`);
+      assert(ix.modals.length === 1, `${who} IS SHOWN THE IGN MODAL on the ex-Priest seat`);
+      assert(ix.shown.length === 0, `${who}: no refusal and no declaration prompt is rendered`);
+
+      const cid = ix.modals[0].custom_id;
+      assert(cid.startsWith('carry:ign:'), `${who}: the modal is the IGN modal (${cid})`);
+      // The run id itself contains a colon (carryrun:0002), so the NEW form is
+      // five segments. The OLD form, with the declaration flag, was six.
+      assert(cid.split(':').length === 5,
+        `${who}: the IGN customId carries NO declaration segment (${cid})`);
+      assert(cid.endsWith(':3'), `${who}: it targets seat 4, the ex-Priest seat (${cid})`);
+    }
+
+    // The declaration BUTTON is dead: its customId is in carry's own namespace,
+    // so a stale one left in a channel must be ignored rather than crash.
+    assert((await handlers.route(btnLike('carry:priest:carryrun:0001:3'))) === false,
+      'a stale "I am a Priest" button is no longer routed by carry');
+
+    // A modal opened seconds BEFORE this deploy carries the OLD five-segment
+    // customId. Parsed by the new router it yields a runId that cannot exist,
+    // so the buyer is told to start again — it can never land on a real run and
+    // claim the wrong seat.
+    {
+      const parts = 'carry:ign:carryrun:0001:0:1'.split(':');
+      const staleRunId = parts.slice(2, parts.length - 1).join(':');
+      assert(staleRunId === 'carryrun:0001:0',
+        `an old-form IGN customId parses to a bogus run id (${staleRunId})`);
+      assert((await db.getRun(staleRunId)) == null,
+        'and that bogus run id resolves to nothing, so no seat can be claimed by it');
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -410,15 +517,14 @@ async function main() {
     const run = await newRun('SSS');
     for (let i = 0; i < 2; i++) await buy(run, { userId: `early${i}`, seatIndex: i });
 
-    // Both buyers resolve the SAME last seat (the Priest seat), both hold the
-    // Priest role, and both click at the same instant.
+    // Both buyers resolve the SAME last seat and click at the same instant.
     const before = await db.getRun(run._id);
-    const pick = cs.selectSeat(before, cs.classProfile(member([PRIEST])));
+    const pick = cs.selectSeat(before);
     assert(pick.ok && pick.seatIndex === 2, 'both buyers resolve seat 3, the last one');
 
     const [a, b] = await Promise.all([
-      buy(run, { userId: 'raceA', seatIndex: pick.seatIndex, priestSeat: true, priestRoleVerified: true }),
-      buy(run, { userId: 'raceB', seatIndex: pick.seatIndex, priestSeat: true, priestRoleVerified: true }),
+      buy(run, { userId: 'raceA', seatIndex: pick.seatIndex }),
+      buy(run, { userId: 'raceB', seatIndex: pick.seatIndex }),
     ]);
 
     const winners = [a, b].filter(r => r.ok);
@@ -467,7 +573,7 @@ async function main() {
 
     const results = await Promise.all(
       ['x1', 'x2', 'x3', 'x4'].map(u =>
-        buy(run, { userId: u, seatIndex: 3, priestSeat: true, priestRoleVerified: true })),
+        buy(run, { userId: u, seatIndex: 3 })),
     );
     const ok = results.filter(r => r.ok);
     assert(ok.length === 1, 'FOUR simultaneous buyers, in-process guard OFF — still exactly one winner');
@@ -493,12 +599,12 @@ async function main() {
     const start = await db.getRun(run._id);
     const picks = [];
     for (let i = 0; i < 9; i++) {
-      picks.push(cs.selectSeat(start, cs.classProfile(member([PRIEST]))).seatIndex);
+      picks.push(cs.selectSeat(start).seatIndex);
     }
     assert(picks.every(p => p === 0), 'all nine resolve seat 1 off the same stale snapshot — the worst case');
 
     const results = await Promise.all(picks.map((seatIndex, i) =>
-      buy(run, { userId: `mob${i}`, seatIndex, priestSeat: false })));
+      buy(run, { userId: `mob${i}`, seatIndex })));
     const winners = results.filter(r => r.ok).length;
     assert(winners === 1, 'only ONE of nine buyers targeting the same seat wins it');
 
@@ -932,10 +1038,13 @@ async function main() {
     assert(parts.slice(2, parts.length - 1).join(':') === runId, 'the pay-select customId round-trips the run id');
     assert(Number(parts[parts.length - 1]) === 3, 'and the seat index');
 
-    const ignId = `carry:ign:${runId}:3:1`;
+    // The IGN customId lost its trailing declaration flag when the Priest seat
+    // was removed, so it is now parsed exactly like the pay-select one.
+    const ignId = `carry:ign:${runId}:3`;
     const ip = ignId.split(':');
-    assert(ip.slice(2, ip.length - 2).join(':') === runId, 'the IGN modal customId round-trips the run id');
-    assert(ip[ip.length - 1] === '1' && Number(ip[ip.length - 2]) === 3, 'and the declared flag + seat index');
+    assert(ip.slice(2, ip.length - 1).join(':') === runId, 'the IGN modal customId round-trips the run id');
+    assert(Number(ip[ip.length - 1]) === 3, 'and the seat index');
+    assert(ip.length === 5, 'the IGN customId is five segments — no declaration flag');
     assert(ignId.length <= 100, `every customId fits Discord's 100-char cap (longest is ${ignId.length})`);
 
     const bookingId = db.bookingIdFor(42);
@@ -1033,7 +1142,7 @@ async function main() {
     // And nobody else may claim carry's — partyfinder runs right after it and
     // has the widest customId surface in the bot.
     const mine = [`carry:pick`, `carry:tier`, `carry:run:SS`, `carry:pay:carryrun:0001:0`,
-      `carry:ign:carryrun:0001:0:1`, `carry:priest:carryrun:0001:3`,
+      `carry:ign:carryrun:0001:0`,
       `carry:paid:carrybooking:000001`, `carry:release:carrybooking:000001`, `carry:cancel:carrybooking:000001`];
     let stolen = [];
     for (const id of mine) {

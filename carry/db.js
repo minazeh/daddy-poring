@@ -44,8 +44,10 @@
 //       guildId, tier: 'SS'|'SSS', priceUsd, slots,
 //       startAt: Date, startEpochSecs: number,
 //       status: 'open'|'closed'|'concluded'|'deleted',
-//       seats: [ { index, priestOnly, status: 'open'|'pending'|'paid',
-//                  bookingId, userId, displayName, ign, declaredPriest } ],
+//       seats: [ { index, status: 'open'|'pending'|'paid',
+//                  bookingId, userId, displayName, ign } ],
+//       (docs written before 2026-08-31 also carry `priestOnly` / `declaredPriest`
+//        on their seats. Nothing reads them any more; every seat is general.)
 //       boardChannelId, boardMessageId,
 //       createdBy, createdAt, updatedAt,
 //       closedBy, closedAt, deletedBy, deletedAt
@@ -54,10 +56,11 @@
 //   carry_bookings — one doc per booking, APPEND-ONLY IN SPIRIT:
 //     {
 //       _id: 'carrybooking:000042', number: 42,
-//       runId, runNumber, tier, priceUsd, seatIndex, priestSeat,
+//       runId, runNumber, tier, priceUsd, seatIndex,
 //       guildId, userId, username, displayName, ign,
-//       declaredPriest,      — buyer self-declared Priest (no class role held)
-//       priestRoleVerified,  — held the Priest role at booking time
+//       (bookings written before 2026-08-31 also carry `priestSeat`,
+//        `declaredPriest` and `priestRoleVerified`. They are left untouched —
+//        this ledger is append-only in spirit — but nothing reads them.)
 //       paymentMethod,
 //       status: 'pending'|'paid'|'completed'|'released'|'cancelled'|'run_deleted',
 //       pendingUntil: Date,
@@ -175,20 +178,18 @@ function bookingIdFor(number) {
 // Runs.
 // ---------------------------------------------------------------------------
 
-// Seats are derived from the tier, never passed in — capacity and the Priest
-// seat cannot drift from the spec (§6).
+// Seats are derived from the tier, never passed in — capacity cannot drift from
+// the spec (§6). Every seat is general; there is no class-gated seat.
 function buildSeats(tier) {
   const seats = [];
   for (let i = 0; i < tier.slots; i++) {
     seats.push({
       index: i,
-      priestOnly: i === tier.priestSeatIndex,
       status: SEAT_STATUS.OPEN,
       bookingId: null,
       userId: null,
       displayName: null,
       ign: null,
-      declaredPriest: false,
     });
   }
   return seats;
@@ -335,7 +336,7 @@ async function rescheduleRun(runId, startAt) {
 // run's TRUE state. Two buyers taking the last seat at the same instant: the
 // database picks the winner, not the process.
 // ===========================================================================
-async function claimSeat({ runId, seatIndex, bookingId, userId, displayName, ign, declaredPriest }) {
+async function claimSeat({ runId, seatIndex, bookingId, userId, displayName, ign }) {
   if (!isReady()) return false;
   const res = await runsCol.updateOne(
     {
@@ -350,7 +351,6 @@ async function claimSeat({ runId, seatIndex, bookingId, userId, displayName, ign
         [`seats.${seatIndex}.userId`]: userId,
         [`seats.${seatIndex}.displayName`]: displayName,
         [`seats.${seatIndex}.ign`]: ign,
-        [`seats.${seatIndex}.declaredPriest`]: Boolean(declaredPriest),
         updatedAt: new Date(),
       },
     },
@@ -394,7 +394,6 @@ async function vacateSeat(runId, seatIndex, bookingId, fromStatuses = [SEAT_STAT
         [`seats.${seatIndex}.userId`]: null,
         [`seats.${seatIndex}.displayName`]: null,
         [`seats.${seatIndex}.ign`]: null,
-        [`seats.${seatIndex}.declaredPriest`]: false,
         updatedAt: new Date(),
       },
     },
@@ -420,14 +419,11 @@ async function createBooking(data) {
     tier:        data.tier,
     priceUsd:    data.priceUsd,
     seatIndex:   data.seatIndex,
-    priestSeat:  Boolean(data.priestSeat),
     guildId:     data.guildId || null,
     userId:      data.userId,
     username:    data.username,
     displayName: data.displayName,
     ign:         data.ign,
-    declaredPriest:     Boolean(data.declaredPriest),
-    priestRoleVerified: Boolean(data.priestRoleVerified),
     paymentMethod: data.paymentMethod,
     status:      BOOKING_STATUS.PENDING,
     pendingUntil: data.pendingUntil,

@@ -15,7 +15,6 @@
 // the runner about what the buyer intends to pay with.
 // ---------------------------------------------------------------------------
 
-const { CLASS_ROLE_BY_ID } = require('../guildapp/constants');
 const { TICKET_OFFICER_ROLE_IDS } = require('../ticket/constants');
 
 // ---------------------------------------------------------------------------
@@ -33,8 +32,7 @@ const { TICKET_OFFICER_ROLE_IDS } = require('../ticket/constants');
 //   carry:pick                            panel "Pick your slot" button
 //   carry:tier                            ephemeral tier select
 //   carry:run:<tierKey>                   ephemeral run/timeslot select
-//   carry:priest:<runId>:<seatIndex>      "I am a Priest" declaration button -> IGN modal
-//   carry:ign:<runId>:<seatIndex>:<d>     IGN modal submit (d = 1 if self-declared)
+//   carry:ign:<runId>:<seatIndex>         IGN modal submit
 //   carry:pay:<runId>:<seatIndex>         payment-method select (draft in PENDING_DRAFTS)
 //   carry:paid:<bookingId>                officer Mark Paid
 //   carry:release:<bookingId>             officer Release
@@ -44,8 +42,7 @@ const IDS = {
   PANEL_BUTTON:  'carry:pick',
   TIER_SELECT:   'carry:tier',
   RUN_SELECT:    'carry:run',      // carry:run:<tierKey>
-  PRIEST_DECLARE:'carry:priest',   // carry:priest:<runId>:<seatIndex>
-  IGN_MODAL:     'carry:ign',      // carry:ign:<runId>:<seatIndex>:<declared 0|1>
+  IGN_MODAL:     'carry:ign',      // carry:ign:<runId>:<seatIndex>
   PAY_SELECT:    'carry:pay',      // carry:pay:<runId>:<seatIndex>
   MARK_PAID:     'carry:paid',     // carry:paid:<bookingId>
   RELEASE:       'carry:release',  // carry:release:<bookingId>
@@ -81,21 +78,15 @@ const GODFATHERS_ROLE_ID = '1518076150692188200';
 // source of truth, so an officer added there is an officer here too.
 const CARRY_OFFICER_ROLE_IDS = TICKET_OFFICER_ROLE_IDS;
 
-// The Priest class role. The Priest seat is SELLABLE but class-gated.
-const PRIEST_ROLE_ID = '1518174089817227415';
-
-// Every class role in the guild. Used to tell "no class role at all" (may
-// self-declare Priest, spec §5) apart from "has a class role, and it isn't
-// Priest" (refused outright, spec §11).
-const CLASS_ROLE_IDS = Object.keys(CLASS_ROLE_BY_ID);
-
 // ---------------------------------------------------------------------------
-// Product (spec §3). Capacity and the Priest seat FOLLOW FROM THE TIER and are
-// never entered by hand, so they cannot drift from the spec.
+// Product (spec §3). Capacity FOLLOWS FROM THE TIER and is never entered by
+// hand, so it cannot drift from the spec.
 //
-// priestSeatIndex is the LAST seat of each tier. Seats are assigned lowest open
-// general seat first, so the Priest seat is the last one left — which is
-// exactly when the Priest declaration step (spec §7.4) becomes relevant.
+// EVERY SEAT IS OPEN TO EVERY CLASS (Conrad, 2026-08-31). There was previously
+// a Priest-only seat — the last seat of each tier — with a self-declaration
+// step behind it and a wrong-class refusal in front of it. All of that is gone.
+// Slot counts are UNCHANGED, so the seat that used to be Priest-only is now
+// simply sellable to anyone. Seats are assigned lowest open seat first.
 // ---------------------------------------------------------------------------
 const TIERS = {
   SS: {
@@ -103,7 +94,6 @@ const TIERS = {
     label: 'Guaranteed SS',
     priceUsd: 5,
     slots: 4,
-    priestSeatIndex: 3,
     emoji: '🔹',
     color: 0x3498db,
   },
@@ -112,7 +102,6 @@ const TIERS = {
     label: 'Guaranteed SSS',
     priceUsd: 10,
     slots: 3,
-    priestSeatIndex: 2,
     emoji: '🔶',
     color: 0xe67e22,
   },
@@ -227,7 +216,7 @@ const PANEL_TITLE = 'Final Mirage Carries';
 // Conrad's supplied copy is the spine of this embed — the opening hook, the
 // "Pricing & Available Slots" block and the "Accepted Payment Methods" list are
 // his wording and are not to be rewritten. The operational paragraphs after them
-// (Priest seat, what you'll be asked, the hold window) are ours and describe the
+// (what you'll be asked, the hold window) are ours and describe the
 // mechanism, so they MUST be kept true to the flow in handlers.js.
 const PANEL_DESCRIPTION =
   'Get carried through **Final Mirage** with guaranteed high-tier rewards. ' +
@@ -237,9 +226,7 @@ const PANEL_DESCRIPTION =
   `${TIERS.SSS.emoji} **${TIERS.SSS.label}:** $${TIERS.SSS.priceUsd} per slot (${TIERS.SSS.slots} slots available per run)\n\n` +
   '**Accepted Payment Methods**\n\n' +
   'GCash\nBank Transfer\nWise\nPayPal\n\n' +
-  'One slot in every run is a **Priest seat** and can only be taken by a Priest. ' +
-  "If you're a Priest but don't have the class role here, you can say so when you book " +
-  'and an officer will confirm it.\n\n' +
+  '**Every slot is open to every class** — there is no class requirement, and no class check at booking.\n\n' +
   "You'll be asked for:\n\n" +
   '**Tier** — SS or SSS\n' +
   '**Time slot** — pick from the open runs\n' +
@@ -314,9 +301,6 @@ module.exports = {
   CHANNELS,
   GODFATHERS_ROLE_ID,
   CARRY_OFFICER_ROLE_IDS,
-  PRIEST_ROLE_ID,
-  CLASS_ROLE_IDS,
-  CLASS_ROLE_BY_ID,
   TIERS,
   TIER_KEYS,
   tierFor,

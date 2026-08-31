@@ -27,7 +27,6 @@ design departures from `/partyfinder` (see §4).
 | Sales panel channel | `1541160645292982373` |
 | Public schedule board | `1527144922812121118` |
 | Pending-payment board (officer) | `1541159719266156697` |
-| Priest class role | `1518174089817227415` |
 | Godfathers (run admin) | `1518076150692188200` |
 | Officers (mark paid) | `TICKET_OFFICER_ROLE_IDS` (ticket/constants.js:45) |
 
@@ -41,18 +40,22 @@ leak. See §7 step 7.
 
 ## 3. Product
 
-| Tier | Price | Slots | Priest seat |
+| Tier | Price | Slots | Class requirement |
 |---|---|---|---|
-| Guaranteed SS | $5 / slot | 4 | 1 of the 4, Priest-only |
-| Guaranteed SSS | $10 / slot | 3 | 1 of the 3, Priest-only |
+| Guaranteed SS | $5 / slot | 4 | None — any class |
+| Guaranteed SSS | $10 / slot | 3 | None — any class |
 
 Payment methods offered: GCash, Bank Transfer, Wise, PayPal. The buyer picks
 one, but **no account details are attached to any of them** — the pick is a hint
 recorded on the booking and shown to the runner and on the pending board, so the
 runner knows what is coming before the buyer messages them.
 
-The Priest seat is **sellable but class-gated** — it counts toward the slots for
-sale, and only a Priest may take it.
+**Every seat is open to every class** (Conrad, 2026-08-31). There was
+previously a Priest-only seat — the last seat of each tier — with a
+self-declaration step behind it and a wrong-class refusal in front of it. All of
+that is removed. **Slot counts are unchanged**, so the seat that used to be
+Priest-only is now simply sellable to anyone, and the buyer's roles are never
+read at any point in the flow.
 
 ---
 
@@ -97,19 +100,26 @@ This also gives per-run and per-period revenue reporting for free later.
 
 ---
 
-## 5. Priest verification — the one conflict, and its resolution
+## 5. Class requirements — there are none
 
-Class roles are **not** self-assignable. `reactionrole/` handles only the Guild
-Expedition role; class roles come from the guild application / officer
-assignment (`guildapp/constants.js`). An outside buyer therefore arrives with no
-Priest role, so the Priest-only seat cannot be role-verified for precisely the
-audience being sold to.
+**Removed 2026-08-31 (Conrad): "remove the priest slot and instead open it up
+for all classes."**
 
-**Resolution — no extra workflow.** Gate by role when the buyer has one. A buyer
-with no class role may self-declare Priest at booking; the declaration is
-recorded on the booking and surfaced on the pending board, where the officer is
-already clicking to confirm payment. Class verification rides along with that
-same click. Outside Priests can buy; nothing runs on the honour system.
+This section previously described a Priest-only seat and the self-declaration
+workflow needed to sell it to outside buyers, who arrive with no class role
+because class roles are not self-assignable. That whole conflict is gone along
+with the requirement that created it. **No seat is class-gated, the buyer's
+roles are never read, and there is nothing for an officer to verify at Mark Paid
+beyond the payment itself.**
+
+**No migration was run.** Runs created before the change still carry
+`priestOnly: true` on their last seat in Mongo, and bookings written before it
+still carry `priestSeat` / `declaredPriest` / `priestRoleVerified`. Nothing
+reads any of those fields any more — `selectSeat` deliberately ignores
+`priestOnly`, which is what makes an already-open run's last seat sellable to
+anyone the moment the change deploys. The booking ledger is append-only in
+spirit (§4.2), so the historical flags are left exactly as they were rather than
+being rewritten.
 
 ---
 
@@ -127,8 +137,8 @@ auto-rollover** (Conrad, 2026-08-24).
 | `close <run>` | Stops accepting joins, board message stays |
 | `edit <run> <datetime>` | Reschedules, board message updates in place |
 
-`create` takes tier and date/time; capacity and the Priest seat follow from the
-tier, so they are never entered by hand and can't drift from §3.
+`create` takes tier and date/time; capacity follows from the tier, so it is
+never entered by hand and can't drift from §3.
 
 A run's board message is **left in place after its start time passes** — no
 auto-archive. It stops accepting joins and is restyled as concluded.
@@ -160,11 +170,9 @@ run and is blocked while any paid seat survives.
 3. **Timeslot select** (ephemeral) — open runs of that tier only. **Full runs are
    filtered out**, so a full run cannot be picked in the first place; the
    conditional take in §4.1 is the backstop for the race, not the primary guard.
-4. **Priest declaration** — only shown when the buyer is taking the Priest seat
-   and holds no class role.
-5. **IGN capture** (modal) — required, recorded on the booking.
-6. **Payment method select** — GCash / Bank Transfer / Wise / PayPal.
-7. **Seat goes PENDING.** Buyer is DM'd a **clickable `<@id>` mention of the
+4. **IGN capture** (modal) — required, recorded on the booking.
+5. **Payment method select** — GCash / Bank Transfer / Wise / PayPal.
+6. **Seat goes PENDING.** Buyer is DM'd a **clickable `<@id>` mention of the
    runner** — the run's creator (`run.createdBy`, stamped by `/carryrun create`)
    — and told to DM them to arrange payment, naming the method they picked. The
    DM also carries the booking id, the price, the run label and the hold
@@ -172,7 +180,7 @@ run and is blocked while any paid seat survives.
    resolvable creator, the buyer is told an **officer will follow up** instead;
    a broken mention is never rendered. Public board updates to show the seat
    held. An entry appears on the pending board.
-8. **Officer clicks Mark Paid** → seat confirmed, boards update.
+7. **Officer clicks Mark Paid** → seat confirmed, boards update.
    **30 minutes elapse without payment** → seat auto-releases, boards update, the
    slot is open again.
 
@@ -184,15 +192,15 @@ Cancellation of a confirmed seat is **officer-only**. Buyers cannot self-release
 
 **Public board** (`1527144922812121118`) — one message per run, edited in place
 on every state change. Shows tier, date/time, filled/total, seat occupants, the
-Priest seat's status, and the **runner as a mention** — buyers see who they will
+class requirement (none), and the **runner as a mention** — buyers see who they will
 be paying before they book. One message per run rather than a single master embed:
 cheaper edits, no rewrite races, and it never hits the 25-field embed cap once
 several runs are live at once.
 
 **Pending board** (`1541159719266156697`) — officer-facing. One entry per unpaid
 hold: buyer, IGN, tier, run, chosen payment method, **the runner as a mention**
-(whose DMs the money is going to), declared-Priest flag, countdown to
-auto-release, and **Mark Paid** / **Release** buttons.
+(whose DMs the money is going to), countdown to auto-release, and **Mark Paid**
+/ **Release** buttons.
 
 Both boards' message IDs are persisted so edits survive a restart.
 
@@ -239,8 +247,13 @@ Estimated 1,200–1,600 lines, comparable to the ticket system.
   booking record retained.
 - Officer marks paid after auto-release — refused with a clear reason, seat may
   have been resold.
-- Non-Priest attempting the Priest seat with a class role that isn't Priest —
-  refused, no self-declare path offered (they have a role; it just isn't Priest).
+- Buyer picks a run whose only free seat used to be the Priest seat — **sold
+  normally, whatever their class.** A run created before 2026-08-31 still has
+  `priestOnly: true` on that seat; it is ignored, not migrated.
+- A modal or declaration button opened just before the 2026-08-31 deploy — the
+  old customId shapes are no longer routed. The stale IGN form parses to a run
+  id that cannot exist, so the buyer is told to start again and no seat can be
+  claimed by it.
 - Board message deleted manually — re-posted on next state change, ID re-persisted.
 - `/carryrun delete` on a run holding paid bookings — refused with the count, not
   silently destructive (§6.1).
@@ -295,7 +308,7 @@ Points the spec left implicit. None change a decision it made.
 
 | Point | Resolution |
 |---|---|
-| **Which seat a buyer gets** | The flow (§7) has no seat picker, so seats are **assigned: lowest open general seat first, the Priest seat only when nothing else is left.** This is what makes §7.4 ("shown only when the buyer is taking the Priest seat") and §11 ("non-Priest with a class role that isn't Priest — refused") describe the same moment. |
+| **Which seat a buyer gets** | The flow (§7) has no seat picker, so seats are **assigned: lowest open seat first.** Since 2026-08-31 no seat is class-gated, so that is the whole rule — the only way seat resolution can fail is a full run. |
 | **`create <datetime>`** | Taken as separate `date` (YYYY-MM-DD) and `time` (HH:MM) options, both GMT+7 — same information, but Discord gives each option its own hint text, which is what stops `30/08` and `8pm` arriving. Matches `/gvgschedule`. |
 | **Run docs on `delete`** | The board message is deleted; the **run document is tombstoned (`status: 'deleted'`), not dropped**, because every booking in the ledger points at its `runId` and a dangling id would make the ledger unreadable. |
 | **Terminal bookings on `delete`** | Only bookings still **live** (`pending`) transition to `run_deleted`. One that already ended `released` or `cancelled` keeps that status — overwriting it would falsify how it ended — but every booking for the run is stamped `runDeletedAt`/`runDeletedBy`. |
