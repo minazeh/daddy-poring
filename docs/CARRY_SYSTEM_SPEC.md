@@ -190,16 +190,23 @@ run and is blocked while any paid seat survives.
 
 Cancellation of a confirmed seat is **officer-only**. Buyers cannot self-release.
 
-### 7.1 "Where do you hear the service?" (added 2026-09-02)
+### 7.1 "Where did you hear about our service?" (added 2026-09-02)
 
 Conrad, 2026-09-02: *"in the modal I want to add a field 'Where do you hear the
 service? (FB Group, YouTube, Person, Etc.)' this goes alongside the IGN and
 all."* It is marketing attribution — which channel is actually producing sales.
 
+**Reworded the same day**, before the field had been through a single real
+booking. Conrad's revised string: *"Where did you hear about our service? If
+YouTube, specify from which video."* The rewording is **copy only** — the custom
+id, the required flag, the 100-character cap, the `heardFrom` persistence and
+the deploy-safe read are all untouched, so a modal already open across that
+deploy still submits and still books.
+
 | Point | Resolution |
 |---|---|
 | **Where it sits** | Second row of the same modal, below the IGN. The modal is retitled **"Your booking details"** since it no longer asks only for a name. |
-| **The wording** | Discord caps a modal input **label at 45 characters** and the full question is 64, so it is split rather than paraphrased: label `Where do you hear the service?`, placeholder `FB Group, YouTube, Person, Etc.` |
+| **The wording** | Discord caps a modal input **label at 45 characters** and the full question is 75, so it is split rather than paraphrased: label `Where did you hear about our service?` (37), placeholder `If YouTube, specify from which video.` (37). |
 | **Required** | Yes. Short input, 100-character cap (`HEARD_FROM_MAX`). |
 | **Stored as** | `heardFrom` — the same name in JS, on `seats.<i>` and on the booking doc. Carried modal → draft → `claimSeat` → seat + ledger. Nulled on the seat by the release path exactly as the IGN is; the **booking keeps it forever** (§4.2). |
 | **Who sees it** | **Officers only** — the pending board, immediately beside the IGN. It is deliberately **not** on the public run board and **not** in anything the buyer receives, including the confirmation echo after the modal. How a buyer found us is not other buyers' business. |

@@ -578,9 +578,14 @@ async function handleRunSelect(interaction, tierKey) {
 // The buyer's one form: IGN, then where they heard about the service.
 //
 // Discord caps a modal input LABEL at 45 characters. Conrad's question — "Where
-// do you hear the service? (FB Group, YouTube, Person, Etc.)" — is 64, so it is
-// split across the label and the placeholder rather than paraphrased: the
-// question is the label, the examples are the placeholder.
+// did you hear about our service? If YouTube, specify from which video." — is
+// 75, so it is split across the label and the placeholder rather than
+// paraphrased: the question is the label, his follow-up is the placeholder.
+//
+// Reworded 2026-09-02 (was "Where do you hear the service?" /
+// "FB Group, YouTube, Person, Etc."). COPY ONLY — the custom id, the required
+// flag, the 100-char cap and every downstream hop are deliberately unchanged,
+// so a form already open across the deploy still submits and still books.
 function buildBookingModal(runId, seatIndex) {
   const modal = new ModalBuilder()
     .setCustomId(`${IDS.IGN_MODAL}:${runId}:${seatIndex}`)
@@ -599,8 +604,8 @@ function buildBookingModal(runId, seatIndex) {
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
         .setCustomId(FIELDS.HEARD_FROM)
-        .setLabel('Where do you hear the service?')
-        .setPlaceholder('FB Group, YouTube, Person, Etc.')
+        .setLabel('Where did you hear about our service?')
+        .setPlaceholder('If YouTube, specify from which video.')
         .setStyle(TextInputStyle.Short)
         .setMaxLength(HEARD_FROM_MAX)
         .setRequired(true),

@@ -1248,14 +1248,14 @@ async function main() {
       'the SECOND is the heard-from field — it sits BELOW the IGN, alongside it on one form');
     assert(ignInput.label === 'In-game name (IGN)', 'the IGN label is untouched');
 
-    // Conrad's question is 64 characters and a Discord modal label caps at 45,
-    // so it is split — question in the label, his examples in the placeholder.
+    // Conrad's question is 75 characters and a Discord modal label caps at 45,
+    // so it is split — question in the label, his follow-up in the placeholder.
     // Neither half is paraphrased, which is what these two assert.
-    assert(heardInput.label === 'Where do you hear the service?',
+    assert(heardInput.label === 'Where did you hear about our service?',
       `the label is the question verbatim (got "${heardInput.label}")`);
-    assert(heardInput.placeholder === 'FB Group, YouTube, Person, Etc.',
-      `and the examples are the placeholder verbatim (got "${heardInput.placeholder}")`);
-    assert('Where do you hear the service? (FB Group, YouTube, Person, Etc.)'.length > 45,
+    assert(heardInput.placeholder === 'If YouTube, specify from which video.',
+      `and his follow-up is the placeholder verbatim (got "${heardInput.placeholder}")`);
+    assert('Where did you hear about our service? If YouTube, specify from which video.'.length > 45,
       'the unsplit question would NOT have fitted a label — the split is forced, not stylistic');
     assert(heardInput.label.length <= 45, `the label fits the 45-char cap (${heardInput.label.length})`);
     assert(heardInput.placeholder.length <= 100, `the placeholder fits the 100-char cap (${heardInput.placeholder.length})`);

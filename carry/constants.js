@@ -246,7 +246,7 @@ const PANEL_DESCRIPTION =
   '**Tier** — SS or SSS\n' +
   '**Time slot** — pick from the open runs\n' +
   '**In-game Name (IGN)** — so we can find you in game\n' +
-  '**Where you heard about the service** — FB Group, YouTube, a person, etc.\n' +
+  '**Where you heard about our service** — FB Group, YouTube, a person, and so on\n' +
   '**Payment method** — GCash, Bank Transfer, Wise or PayPal\n\n' +
   `⏳ **Your slot is held for ${PENDING_HOLD_MS / 60000} minutes.** As soon as you book, ` +
   "you'll be DM'd who to message about payment — arrange it with them directly. Pay within " +
