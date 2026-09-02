@@ -5,7 +5,8 @@
 //
 // Buyer flow (spec §7):
 //   panel button -> tier select -> run select ->
-//   IGN modal -> payment-method select -> SEAT GOES PENDING (conditional take)
+//   booking modal (IGN + how they heard about us) ->
+//   payment-method select -> SEAT GOES PENDING (conditional take)
 //   -> DM pointing the buyer at the RUNNER -> public board updates ->
 //   pending board entry.
 //
@@ -56,6 +57,8 @@ const {
   TIME_ZONE_OFFSET_MINUTES,
   TIME_ZONE_DISPLAY,
   IGN_MAX,
+  HEARD_FROM_MAX,
+  HEARD_FROM_UNRECORDED,
   SEAT_STATUS,
   BOOKING_STATUS,
   RUN_STATUS,
@@ -90,6 +93,36 @@ function displayNameOf(interaction) {
 // Neutralise anything a buyer-supplied IGN could use to ping a channel.
 function defuseMentions(text) {
   return String(text || '').replace(/@(everyone|here|&\d+|!?\d+)/g, '@​$1');
+}
+
+// DEPLOY SAFETY. `interaction.fields.getTextInputValue()` THROWS
+// (DiscordjsTypeError) when the submitted modal did not carry that custom id —
+// it does not return undefined. A buyer can open the booking modal seconds
+// before a deploy that adds a field and submit it seconds after; that
+// submission has no such input, and letting the throw escape would kill the
+// handler and cost them their place in the flow.
+//
+// Every field added AFTER the modal first shipped must be read through here.
+// Returns null when the field is absent, which callers treat as "not answered"
+// rather than as a reason to refuse the sale.
+function readOptionalField(interaction, customId) {
+  try {
+    const value = interaction.fields.getTextInputValue(customId);
+    return typeof value === 'string' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+// Officer-facing render of `heardFrom`. Absent (a booking written before the
+// field existed) and null (a submit that crossed the deploy) look the same to
+// an officer and both say so plainly — never a blank cell, never the literal
+// text "null" or "undefined". Bounded before defusing so a hand-edited Mongo
+// value can't push the embed field past Discord's 1024-char cap.
+function heardFromLabel(booking) {
+  const raw = booking?.heardFrom;
+  if (typeof raw !== 'string' || !raw.trim().length) return HEARD_FROM_UNRECORDED;
+  return defuseMentions(raw.trim().slice(0, HEARD_FROM_MAX));
 }
 
 // Format an instant as a GMT+7 wall-clock label: "Sat 30 Aug 2026, 8:00 PM".
@@ -331,6 +364,11 @@ function buildBookingEmbed(booking, run) {
     .addFields(
       { name: 'Buyer',   value: `<@${booking.userId}>\n${defuseMentions(booking.displayName)}`, inline: true },
       { name: 'IGN',     value: defuseMentions(booking.ign) || '—',                             inline: true },
+      // OFFICER-FACING ONLY (spec §8). Deliberately NOT on the public run board
+      // and not in anything the buyer receives — this is marketing attribution,
+      // and the buyer beside them in the run has no business reading it.
+      // Sits third so Discord renders it on the same row as the buyer and IGN.
+      { name: 'Heard from', value: heardFromLabel(booking),                                     inline: true },
       { name: 'Price',   value: `$${booking.priceUsd}`,                                         inline: true },
       { name: 'Payment', value: method ? `${method.emoji} ${method.label}` : String(booking.paymentMethod), inline: true },
       { name: 'Seat',    value: `Seat ${booking.seatIndex + 1}`,                                    inline: true },
@@ -534,13 +572,19 @@ async function handleRunSelect(interaction, tierKey) {
     await renderRunPicker(interaction, tierKey, '⚠️ That run just filled up. **Pick another time slot.**');
     return;
   }
-  await interaction.showModal(buildIgnModal(run._id, pick.seatIndex));
+  await interaction.showModal(buildBookingModal(run._id, pick.seatIndex));
 }
 
-function buildIgnModal(runId, seatIndex) {
+// The buyer's one form: IGN, then where they heard about the service.
+//
+// Discord caps a modal input LABEL at 45 characters. Conrad's question — "Where
+// do you hear the service? (FB Group, YouTube, Person, Etc.)" — is 64, so it is
+// split across the label and the placeholder rather than paraphrased: the
+// question is the label, the examples are the placeholder.
+function buildBookingModal(runId, seatIndex) {
   const modal = new ModalBuilder()
     .setCustomId(`${IDS.IGN_MODAL}:${runId}:${seatIndex}`)
-    .setTitle('Your in-game name');
+    .setTitle('Your booking details');
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(
@@ -552,16 +596,40 @@ function buildIgnModal(runId, seatIndex) {
         .setMaxLength(IGN_MAX)
         .setRequired(true),
     ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId(FIELDS.HEARD_FROM)
+        .setLabel('Where do you hear the service?')
+        .setPlaceholder('FB Group, YouTube, Person, Etc.')
+        .setStyle(TextInputStyle.Short)
+        .setMaxLength(HEARD_FROM_MAX)
+        .setRequired(true),
+    ),
   );
   return modal;
 }
 
-// 6. IGN captured -> payment-method select. STILL NO SEAT CLAIMED — the draft
-// lives in memory only and losing it to a restart costs a re-click, nothing else.
-async function handleIgnModal(interaction, runId, seatIndex) {
+// 6. Booking details captured -> payment-method select. STILL NO SEAT CLAIMED —
+// the draft lives in memory only and losing it to a restart costs a re-click,
+// nothing else.
+async function handleBookingModal(interaction, runId, seatIndex) {
   const ign = interaction.fields.getTextInputValue(FIELDS.IGN).trim();
   if (!ign.length) {
     await interaction.reply(ephemeral('Please enter your in-game name and try again.'));
+    return;
+  }
+
+  // Three cases, and the difference matters:
+  //   null    the input was NOT on the submitted modal — the form was opened
+  //           before this field deployed. BOOK ANYWAY; refusing here would cost
+  //           a paying buyer their seat over our deploy timing, not their input.
+  //   ''      the field was there and the buyer got only whitespace into it.
+  //           Same treatment as an empty IGN above: ask again.
+  //   text    the answer.
+  const heardFromRaw = readOptionalField(interaction, FIELDS.HEARD_FROM);
+  const heardFrom = heardFromRaw === null ? null : heardFromRaw.trim();
+  if (heardFrom !== null && !heardFrom.length) {
+    await interaction.reply(ephemeral('Please tell us where you heard about the service and try again.'));
     return;
   }
 
@@ -584,6 +652,7 @@ async function handleIgnModal(interaction, runId, seatIndex) {
     seatIndex,
     tierKey: run.tier,
     ign,
+    heardFrom,
   });
 
   const select = new StringSelectMenuBuilder()
@@ -642,6 +711,8 @@ async function handlePaySelect(interaction, runId, seatIndex) {
     username: interaction.user.username,
     displayName: displayNameOf(interaction),
     ign: draft.ign,
+    // Officer-facing only — it never reaches the public board or the buyer's DM.
+    heardFrom: draft.heardFrom ?? null,
     paymentMethod: methodKey,
     guildId: interaction.guildId,
   });
@@ -1025,7 +1096,7 @@ async function route(interaction) {
       const parts = id.split(':');
       const seatIndex = Number(parts[parts.length - 1]);
       const runId = parts.slice(2, parts.length - 1).join(':');
-      await handleIgnModal(interaction, runId, seatIndex);
+      await handleBookingModal(interaction, runId, seatIndex);
       return true;
     }
     return false;

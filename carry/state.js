@@ -31,7 +31,11 @@ const {
 } = require('./constants');
 
 // ---------------------------------------------------------------------------
-// 1. Purchase drafts — userId -> { runId, seatIndex, tierKey, ign, ... }
+// 1. Purchase drafts — userId -> { runId, seatIndex, tierKey, ign, heardFrom, ... }
+//
+// `heardFrom` is null for a modal submitted across the 2026-09-02 deploy that
+// added the field; the draft carries the null through rather than dropping it,
+// so the booking records "asked but not answerable" instead of nothing.
 // ---------------------------------------------------------------------------
 const PENDING_DRAFTS = new Map();
 
@@ -147,7 +151,7 @@ function seatKey(runId, seatIndex) {
  */
 async function claimSeat({
   run, seatIndex,
-  userId, username, displayName, ign, paymentMethod, guildId,
+  userId, username, displayName, ign, heardFrom = null, paymentMethod, guildId,
 }) {
   const key = seatKey(run._id, seatIndex);
 
@@ -174,6 +178,7 @@ async function claimSeat({
       username,
       displayName,
       ign,
+      heardFrom,
       paymentMethod,
       pendingUntil,
     });
@@ -186,6 +191,7 @@ async function claimSeat({
       userId,
       displayName,
       ign,
+      heardFrom,
     });
 
     if (!won) {

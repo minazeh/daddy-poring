@@ -25,14 +25,18 @@ const { TICKET_OFFICER_ROLE_IDS } = require('../ticket/constants');
 // in memory. Every id past the run pick carries the run id and seat index, so a
 // restarted process rebuilds full context from the click alone.
 //
-// Discord forbids answering a modal submit with another modal, so the IGN modal
-// is the LAST modal in the chain and is followed by a select (allowed).
+// Discord forbids answering a modal submit with another modal, so the booking
+// modal is the LAST modal in the chain and is followed by a select (allowed).
+//
+// IGN_MODAL keeps its `carry:ign` value even though the modal now captures two
+// fields. The id is what an ALREADY-OPEN modal will submit with, so renaming it
+// would strand every buyer who had the form open across a deploy.
 //
 // Flow chain:
 //   carry:pick                            panel "Pick your slot" button
 //   carry:tier                            ephemeral tier select
 //   carry:run:<tierKey>                   ephemeral run/timeslot select
-//   carry:ign:<runId>:<seatIndex>         IGN modal submit
+//   carry:ign:<runId>:<seatIndex>         booking modal submit (IGN + heard-from)
 //   carry:pay:<runId>:<seatIndex>         payment-method select (draft in PENDING_DRAFTS)
 //   carry:paid:<bookingId>                officer Mark Paid
 //   carry:release:<bookingId>             officer Release
@@ -50,8 +54,13 @@ const IDS = {
 };
 
 // Modal component customIds.
+//
+// HEARD_FROM shipped after IGN (2026-09-02). A modal opened seconds before that
+// deploy submits WITHOUT it, so every reader of this field must tolerate its
+// absence — see readOptionalField() in handlers.js.
 const FIELDS = {
-  IGN: 'carry_ign',
+  IGN:        'carry_ign',
+  HEARD_FROM: 'carry_heard_from',
 };
 
 // ---------------------------------------------------------------------------
@@ -162,6 +171,12 @@ const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/; // HH:MM 24h (GMT+7)
 
 // Input caps.
 const IGN_MAX = 32;
+const HEARD_FROM_MAX = 100;
+
+// Shown wherever a booking has no heard-from value: either a legacy row written
+// before the field existed, or a modal submitted across the deploy that added
+// it. Never render a blank, a "null" or an "undefined" at an officer.
+const HEARD_FROM_UNRECORDED = '*Not recorded*';
 
 // ---------------------------------------------------------------------------
 // Seat + booking status vocabularies. Kept as constants so a typo in a status
@@ -231,6 +246,7 @@ const PANEL_DESCRIPTION =
   '**Tier** — SS or SSS\n' +
   '**Time slot** — pick from the open runs\n' +
   '**In-game Name (IGN)** — so we can find you in game\n' +
+  '**Where you heard about the service** — FB Group, YouTube, a person, etc.\n' +
   '**Payment method** — GCash, Bank Transfer, Wise or PayPal\n\n' +
   `⏳ **Your slot is held for ${PENDING_HOLD_MS / 60000} minutes.** As soon as you book, ` +
   "you'll be DM'd who to message about payment — arrange it with them directly. Pay within " +
@@ -317,6 +333,8 @@ module.exports = {
   DATE_RE,
   TIME_RE,
   IGN_MAX,
+  HEARD_FROM_MAX,
+  HEARD_FROM_UNRECORDED,
   SEAT_STATUS,
   BOOKING_STATUS,
   OCCUPYING_BOOKING_STATUSES,

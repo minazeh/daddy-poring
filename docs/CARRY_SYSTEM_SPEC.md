@@ -1,6 +1,7 @@
 # Final Mirage Carry Sales — Scope
 
-**Status:** **BUILT 2026-08-24 (Kai) — in the working tree, NOT committed, NOT pushed.**
+**Status:** **BUILT 2026-08-24 (Kai). Revised 2026-08-31 (Priest seat removed) and
+2026-09-02 (heard-from field, §7.1 — in the working tree, NOT committed, NOT pushed).**
 Deploying is Conrad's call. See §13.1–13.3 for the env vars, the decisions taken
 at build time, and the retirement mechanism.
 **Replaces:** `/partyfinder` (retired by unregistering it; every file kept on disk)
@@ -91,7 +92,8 @@ The in-process guard from `partyfinder/handlers.js:722` (check and take with no
 
 `partyfinder/db.js` **deletes** party docs on close to avoid accumulating cruft.
 Right for throwaway cards, wrong for sales records. Bookings are never deleted.
-Every booking keeps buyer identity, IGN, tier, price, chosen payment method, the
+Every booking keeps buyer identity, IGN, how they heard about the service
+(§7.1), tier, price, chosen payment method, the
 run it was for, and a timestamped status history (`pending → paid → completed`,
 or `→ released` / `→ cancelled`). Releases and cancellations are status
 transitions, not deletions.
@@ -170,7 +172,9 @@ run and is blocked while any paid seat survives.
 3. **Timeslot select** (ephemeral) — open runs of that tier only. **Full runs are
    filtered out**, so a full run cannot be picked in the first place; the
    conditional take in §4.1 is the backstop for the race, not the primary guard.
-4. **IGN capture** (modal) — required, recorded on the booking.
+4. **Booking details** (modal, "Your booking details") — two required fields on
+   one form: the buyer's **IGN**, and **where they heard about the service**
+   (§7.1). Both are recorded on the booking.
 5. **Payment method select** — GCash / Bank Transfer / Wise / PayPal.
 6. **Seat goes PENDING.** Buyer is DM'd a **clickable `<@id>` mention of the
    runner** — the run's creator (`run.createdBy`, stamped by `/carryrun create`)
@@ -186,6 +190,33 @@ run and is blocked while any paid seat survives.
 
 Cancellation of a confirmed seat is **officer-only**. Buyers cannot self-release.
 
+### 7.1 "Where do you hear the service?" (added 2026-09-02)
+
+Conrad, 2026-09-02: *"in the modal I want to add a field 'Where do you hear the
+service? (FB Group, YouTube, Person, Etc.)' this goes alongside the IGN and
+all."* It is marketing attribution — which channel is actually producing sales.
+
+| Point | Resolution |
+|---|---|
+| **Where it sits** | Second row of the same modal, below the IGN. The modal is retitled **"Your booking details"** since it no longer asks only for a name. |
+| **The wording** | Discord caps a modal input **label at 45 characters** and the full question is 64, so it is split rather than paraphrased: label `Where do you hear the service?`, placeholder `FB Group, YouTube, Person, Etc.` |
+| **Required** | Yes. Short input, 100-character cap (`HEARD_FROM_MAX`). |
+| **Stored as** | `heardFrom` — the same name in JS, on `seats.<i>` and on the booking doc. Carried modal → draft → `claimSeat` → seat + ledger. Nulled on the seat by the release path exactly as the IGN is; the **booking keeps it forever** (§4.2). |
+| **Who sees it** | **Officers only** — the pending board, immediately beside the IGN. It is deliberately **not** on the public run board and **not** in anything the buyer receives, including the confirmation echo after the modal. How a buyer found us is not other buyers' business. |
+| **No migration** | Bookings and open runs already in Mongo have no `heardFrom`. They are left exactly as written (§4.2, same treatment as the Priest flags in §5). Absent and null both render as *Not recorded* — never a blank, never the text "null" or "undefined". |
+
+**Deploy safety — the one thing that could have cost a sale.** A buyer can open
+the modal seconds before this deploys and submit it seconds after. That
+submission carries no heard-from input, and `getTextInputValue()` **throws** on
+an absent custom id rather than returning `undefined`, which would take the
+handler out mid-purchase. It is therefore read through `readOptionalField()` in
+`carry/handlers.js`, which returns `null` when the field is absent, and **the
+booking proceeds with `heardFrom: null` rather than the sale being refused**.
+Any field added to this modal in future must be read the same way.
+
+A whitespace-only answer is a different case — the field *was* on the form — and
+is refused with a re-prompt, exactly as an empty IGN is.
+
 ---
 
 ## 8. Boards
@@ -198,7 +229,8 @@ cheaper edits, no rewrite races, and it never hits the 25-field embed cap once
 several runs are live at once.
 
 **Pending board** (`1541159719266156697`) — officer-facing. One entry per unpaid
-hold: buyer, IGN, tier, run, chosen payment method, **the runner as a mention**
+hold: buyer, IGN, **where they heard about the service** (§7.1 — officer-only,
+never on the public board), tier, run, chosen payment method, **the runner as a mention**
 (whose DMs the money is going to), countdown to auto-release, and **Mark Paid**
 / **Release** buttons.
 
@@ -254,6 +286,11 @@ Estimated 1,200–1,600 lines, comparable to the ticket system.
   old customId shapes are no longer routed. The stale IGN form parses to a run
   id that cannot exist, so the buyer is told to start again and no seat can be
   claimed by it.
+- A booking modal opened just before the **2026-09-02** deploy that added the
+  heard-from field — the submit carries only the IGN. It is read through a safe
+  accessor, so it does **not** throw: the seat is claimed normally and the
+  booking records `heardFrom: null` (§7.1). Refusing that sale would have cost a
+  paying buyer their place over our deploy timing.
 - Board message deleted manually — re-posted on next state change, ID re-persisted.
 - `/carryrun delete` on a run holding paid bookings — refused with the count, not
   silently destructive (§6.1).
@@ -314,7 +351,9 @@ Points the spec left implicit. None change a decision it made.
 | **Terminal bookings on `delete`** | Only bookings still **live** (`pending`) transition to `run_deleted`. One that already ended `released` or `cancelled` keeps that status — overwriting it would falsify how it ended — but every booking for the run is stamped `runDeletedAt`/`runDeletedBy`. |
 | **Who the buyer pays** | The **runner** — `run.createdBy`, the person who ran `/carryrun create`. Rendered as a `<@id>` mention in the buyer's DM and on both boards so it is tappable. Null `createdBy` (or a creator who no longer resolves) falls back to "an officer will follow up"; `<@null>` is never rendered. |
 | **Keeping the payment-method select** | Kept when stored payment details were dropped (Kai's call, trivially reversible). It is one click, it already existed, and it tells the runner whether to expect GCash or PayPal before the buyer messages them. It carries no account data. |
-| **Public board vs IGN** | The public board shows the occupant's **display name only**; the IGN appears on the officer pending board, which is where it is needed. |
+| **Public board vs IGN** | The public board shows the occupant's **display name only**; the IGN appears on the officer pending board, which is where it is needed. The same rule governs `heardFrom` (§7.1). |
+| **The modal's customId is unchanged** | The booking modal still submits as `carry:ign:<runId>:<seatIndex>` even though it is no longer only about the IGN. An already-open form will submit with the id it was built with, so renaming it would strand every buyer mid-purchase across the deploy for a cosmetic gain. `IDS.IGN_MODAL` keeps its name to match its value. |
+| **Echoing the heard-from answer back** | The ephemeral step-4 confirmation echoes the buyer's IGN but **not** their heard-from answer. It is officer-facing data and the echo adds nothing the buyer just typed. Trivially reversible if Conrad wants it shown. |
 | **Pending-board entries after resolution** | Edited in place to a final state with the buttons stripped, never deleted — the officer channel doubles as a log. |
 | **Race losers and the ledger** | The two guards reject at different points and that is visible in the ledger: the in-process fast path rejects **before** any record is written (nothing happened to that buyer), while the conditional take rejects **after** the booking row exists — the row is written first so a crash mid-purchase leaves something recoverable — and that loser is on the ledger as `released`. |
 | **Reschedule of a concluded run** | Moving a **concluded** run to a future time **reopens** it. A run an officer **closed by hand stays closed**; a reschedule is not a reversal of a deliberate act. |

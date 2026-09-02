@@ -45,7 +45,10 @@
 //       startAt: Date, startEpochSecs: number,
 //       status: 'open'|'closed'|'concluded'|'deleted',
 //       seats: [ { index, status: 'open'|'pending'|'paid',
-//                  bookingId, userId, displayName, ign } ],
+//                  bookingId, userId, displayName, ign, heardFrom } ],
+//       (`heardFrom` — how the buyer heard about the service — was added
+//        2026-09-02. Seats written before it simply lack the key; nothing was
+//        migrated, and every reader treats absent as "not recorded".)
 //       (docs written before 2026-08-31 also carry `priestOnly` / `declaredPriest`
 //        on their seats. Nothing reads them any more; every seat is general.)
 //       boardChannelId, boardMessageId,
@@ -57,7 +60,10 @@
 //     {
 //       _id: 'carrybooking:000042', number: 42,
 //       runId, runNumber, tier, priceUsd, seatIndex,
-//       guildId, userId, username, displayName, ign,
+//       guildId, userId, username, displayName, ign, heardFrom,
+//       (`heardFrom` was added 2026-09-02 and is OFFICER-FACING ONLY. Bookings
+//        written before it have no such key; a submit that crossed the deploy
+//        has it as null. Both render as "not recorded" — never a blank.)
 //       (bookings written before 2026-08-31 also carry `priestSeat`,
 //        `declaredPriest` and `priestRoleVerified`. They are left untouched —
 //        this ledger is append-only in spirit — but nothing reads them.)
@@ -190,6 +196,7 @@ function buildSeats(tier) {
       userId: null,
       displayName: null,
       ign: null,
+      heardFrom: null,
     });
   }
   return seats;
@@ -336,7 +343,7 @@ async function rescheduleRun(runId, startAt) {
 // run's TRUE state. Two buyers taking the last seat at the same instant: the
 // database picks the winner, not the process.
 // ===========================================================================
-async function claimSeat({ runId, seatIndex, bookingId, userId, displayName, ign }) {
+async function claimSeat({ runId, seatIndex, bookingId, userId, displayName, ign, heardFrom }) {
   if (!isReady()) return false;
   const res = await runsCol.updateOne(
     {
@@ -351,6 +358,7 @@ async function claimSeat({ runId, seatIndex, bookingId, userId, displayName, ign
         [`seats.${seatIndex}.userId`]: userId,
         [`seats.${seatIndex}.displayName`]: displayName,
         [`seats.${seatIndex}.ign`]: ign,
+        [`seats.${seatIndex}.heardFrom`]: heardFrom ?? null,
         updatedAt: new Date(),
       },
     },
@@ -394,6 +402,7 @@ async function vacateSeat(runId, seatIndex, bookingId, fromStatuses = [SEAT_STAT
         [`seats.${seatIndex}.userId`]: null,
         [`seats.${seatIndex}.displayName`]: null,
         [`seats.${seatIndex}.ign`]: null,
+        [`seats.${seatIndex}.heardFrom`]: null,
         updatedAt: new Date(),
       },
     },
@@ -424,6 +433,9 @@ async function createBooking(data) {
     username:    data.username,
     displayName: data.displayName,
     ign:         data.ign,
+    // Absent on a modal submitted across the 2026-09-02 deploy. Stored as an
+    // explicit null so a new row is never mistaken for a legacy one.
+    heardFrom:   data.heardFrom ?? null,
     paymentMethod: data.paymentMethod,
     status:      BOOKING_STATUS.PENDING,
     pendingUntil: data.pendingUntil,

@@ -355,6 +355,70 @@ function runSelectInteraction({ userId, runId, tierKey = 'SS', roles = [] }) {
   };
 }
 
+// A booking-modal submit, shaped like the real interaction so it can go through
+// handlers.route() rather than through a hand-called internal.
+//
+// `fields` is the map of custom ids the SUBMITTED modal actually carried. A
+// modal opened seconds before the 2026-09-02 deploy carries only the IGN, and
+// discord.js does NOT return undefined for an absent id — ModalSubmitFields
+// #getField THROWS a DiscordjsTypeError. That throw is the production failure
+// this fixture exists to reproduce, so it is modelled exactly.
+function bookingModalInteraction({ userId, runId, seatIndex, fields }) {
+  const shown = [];
+  return {
+    customId: `carry:ign:${runId}:${seatIndex}`,
+    user: { id: userId, username: userId },
+    member: member([]),
+    guildId: 'G1',
+    shown,
+    fields: {
+      getTextInputValue(id) {
+        if (!Object.prototype.hasOwnProperty.call(fields, id)) {
+          const err = new TypeError(`[ModalSubmitInteractionFieldNotFound]: Field "${id}" not found.`);
+          err.code = 'ModalSubmitInteractionFieldNotFound';
+          throw err;
+        }
+        return fields[id];
+      },
+    },
+    isButton: () => false,
+    isStringSelectMenu: () => false,
+    isModalSubmit: () => true,
+    async showModal() { throw new Error('Discord forbids answering a modal submit with another modal'); },
+    async update(payload) { shown.push(payload); },
+    async editReply(payload) { shown.push(payload); },
+    async reply(payload) { shown.push(payload); },
+    async deferUpdate() {},
+  };
+}
+
+// Drive the REAL buyer flow from the MODAL SUBMIT through to a pending seat.
+// Nothing is planted in the draft by hand here, so a value has to survive every
+// hop — modal -> draft -> claimSeat -> seat doc + booking doc — on its own.
+async function bookThroughModal(client, run, {
+  userId, seatIndex = 0, ign = 'Tester', heardFrom = 'FB Group',
+  method = 'gcash', omitHeardFrom = false,
+} = {}) {
+  const fields = { carry_ign: ign };
+  if (!omitHeardFrom) fields.carry_heard_from = heardFrom;
+
+  const mx = bookingModalInteraction({ userId, runId: run._id, seatIndex, fields });
+  const modalRouted = await handlers.route(mx);
+  const draft = cs.getDraft(userId, { runId: run._id, seatIndex });
+
+  const px = paySelectInteraction(client, { userId, runId: run._id, seatIndex, method });
+  const claimed = await handlers.route(px);
+
+  return {
+    modalRouted,
+    modalReply: mx.shown.length ? mx.shown[mx.shown.length - 1] : null,
+    draft: draft ? { ...draft } : null,
+    claimed,
+    payReply: px.shown.length ? px.shown[px.shown.length - 1] : null,
+    dm: [...client.dms].reverse().find(d => d.userId === userId) || null,
+  };
+}
+
 // Drive the real buyer flow from "IGN captured" to "seat pending + DM sent".
 async function bookThroughPaySelect(client, run, { userId, seatIndex = 0, ign = 'Tester', method = 'gcash' }) {
   cs.setDraft(userId, { runId: run._id, seatIndex, tierKey: run.tier, ign });
@@ -1158,6 +1222,188 @@ async function main() {
     let pfStillRoutes = false;
     try { await partyfinder.route(btn('pf:join:DPS:999')); } catch (e) { pfStillRoutes = /ACTED/.test(e.message); }
     assert(pfStillRoutes, 'retired /partyfinder still routes its own buttons — cards posted before the retirement keep working');
+  }
+
+  // -------------------------------------------------------------------------
+  section('M. the booking modal asks WHERE THE BUYER HEARD ABOUT US (2026-09-02)');
+  // -------------------------------------------------------------------------
+  resetStore();
+  {
+    // ---- the modal payload, read as Discord will actually receive it -------
+    const run = await newRun('SS');
+    const ix = runSelectInteraction({ userId: 'shopper', runId: run._id, tierKey: 'SS' });
+    assert(await handlers.route(ix), 'picking a timeslot opens the booking modal');
+    const modal = ix.modals[0];
+
+    assert(modal.title === 'Your booking details',
+      `the title covers BOTH fields now, not just the IGN (got "${modal.title}")`);
+    assert(modal.components.length === 2,
+      `the modal carries EXACTLY TWO inputs (got ${modal.components.length})`);
+    assert(modal.components.every(row => row.components.length === 1),
+      'one input per action row, as Discord requires');
+
+    const [ignInput, heardInput] = modal.components.map(row => row.components[0]);
+    assert(ignInput.custom_id === 'carry_ign', 'the FIRST input is the IGN');
+    assert(heardInput.custom_id === 'carry_heard_from',
+      'the SECOND is the heard-from field — it sits BELOW the IGN, alongside it on one form');
+    assert(ignInput.label === 'In-game name (IGN)', 'the IGN label is untouched');
+
+    // Conrad's question is 64 characters and a Discord modal label caps at 45,
+    // so it is split — question in the label, his examples in the placeholder.
+    // Neither half is paraphrased, which is what these two assert.
+    assert(heardInput.label === 'Where do you hear the service?',
+      `the label is the question verbatim (got "${heardInput.label}")`);
+    assert(heardInput.placeholder === 'FB Group, YouTube, Person, Etc.',
+      `and the examples are the placeholder verbatim (got "${heardInput.placeholder}")`);
+    assert('Where do you hear the service? (FB Group, YouTube, Person, Etc.)'.length > 45,
+      'the unsplit question would NOT have fitted a label — the split is forced, not stylistic');
+    assert(heardInput.label.length <= 45, `the label fits the 45-char cap (${heardInput.label.length})`);
+    assert(heardInput.placeholder.length <= 100, `the placeholder fits the 100-char cap (${heardInput.placeholder.length})`);
+    assert(heardInput.style === 1, 'it is a Short input, not a paragraph');
+    assert(heardInput.max_length === 100, `capped at 100 characters (got ${heardInput.max_length})`);
+    assert(heardInput.required === true, 'and it is REQUIRED');
+
+    assert(db.buildSeats(TIERS.SS).every(s => s.heardFrom === null),
+      'a new run starts with heardFrom null on every seat');
+  }
+
+  // ---- a normal submit carries the answer the whole way down --------------
+  resetStore();
+  {
+    const client = makeClient();
+    const run = await newRun('SS', 24, { createdBy: RUNNER_ID });
+    const r = await bookThroughModal(client, run, { userId: 'buyerA', ign: 'Aria', heardFrom: 'YouTube' });
+
+    assert(r.modalRouted, 'the modal submit is routed');
+    assert(r.draft && r.draft.heardFrom === 'YouTube', 'the answer lands on the in-memory draft');
+
+    const fresh = await db.getRun(run._id);
+    const seat = fresh.seats[0];
+    assert(seat.status === SEAT_STATUS.PENDING, 'the seat goes pending through the real router');
+    assert(seat.heardFrom === 'YouTube', 'the answer is on the SEAT doc after the conditional take');
+
+    const booking = await db.getBooking(seat.bookingId);
+    assert(booking.heardFrom === 'YouTube', 'and on the BOOKING ledger doc');
+    assert(booking.ign === 'Aria', 'the IGN still lands too — the new field did not displace it');
+
+    // ---- the officer board, rendered ------------------------------------
+    const embed = handlers.buildBookingEmbed(booking, fresh).toJSON();
+    const fields = embed.fields;
+    const hf = fields.find(f => /heard/i.test(f.name));
+    assert(hf !== undefined, 'THE OFFICER PENDING BOARD shows the heard-from value');
+    assert(hf.value === 'YouTube', `and shows it verbatim (got "${hf.value}")`);
+    const ignIdx = fields.findIndex(f => f.name === 'IGN');
+    assert(fields.indexOf(hf) === ignIdx + 1, 'it sits IMMEDIATELY BESIDE the IGN');
+    assert(hf.inline === true && fields[ignIdx].inline === true,
+      'both inline, so Discord renders them on one row with the buyer');
+    assert(hf.value.length <= 1024, `the field is inside the 1024-char cap (${hf.value.length})`);
+    assert(JSON.stringify(embed).length < 6000, `and the embed is nowhere near the 6000-char cap (${JSON.stringify(embed).length})`);
+
+    // ---- and it is OFFICER-ONLY -----------------------------------------
+    const publicBlob = JSON.stringify(handlers.buildRunEmbed(fresh).toJSON());
+    assert(!publicBlob.includes('YouTube'),
+      'THE PUBLIC BOARD does NOT carry it — the buyer beside them never reads how they found us');
+    assert(!/heard/i.test(publicBlob), 'the public board has no heard-from field at all');
+    assert(r.dm && !/YouTube/i.test(r.dm.text), 'and it is in nothing the BUYER receives');
+
+    // ---- a buyer-supplied value cannot ping the channel ------------------
+    const pingy = { ...booking, heardFrom: '@everyone told me' };
+    const pingyValue = handlers.buildBookingEmbed(pingy, fresh).toJSON().fields.find(f => /heard/i.test(f.name)).value;
+    assert(!/(^|[^​])@everyone/.test(pingyValue),
+      `an @everyone in the answer is defused before it reaches the officer board (got "${pingyValue}")`);
+
+    // ---- a value at the input cap survives intact ------------------------
+    const long = 'F'.repeat(100);
+    const longValue = handlers.buildBookingEmbed({ ...booking, heardFrom: long }, fresh).toJSON().fields.find(f => /heard/i.test(f.name)).value;
+    assert(longValue === long, 'a 100-character answer renders in full, not truncated');
+
+    // ---- the release path clears the seat, not the ledger ----------------
+    await bookingsCol.updateOne({ _id: booking._id }, { $set: { pendingUntil: new Date(Date.now() - 1000) } });
+    assert(await handlers.releaseHold(client, booking._id) === true, 'the hold lapses and releases');
+    const afterRun = await db.getRun(run._id);
+    assert(afterRun.seats[0].heardFrom === null, 'THE RELEASE PATH nulls heardFrom on the seat, exactly as it nulls the IGN');
+    assert(afterRun.seats[0].ign === null, 'alongside the IGN itself');
+    assert((await db.getBooking(booking._id)).heardFrom === 'YouTube',
+      'but the BOOKING keeps it — the ledger is append-only in spirit (§4.2)');
+  }
+
+  // ---- whitespace only: refused the way an empty IGN is -------------------
+  resetStore();
+  {
+    const client = makeClient();
+    const run = await newRun('SS');
+    const ws = await bookThroughModal(client, run, { userId: 'buyerB', heardFrom: '   ' });
+
+    assert(ws.modalRouted, 'a whitespace-only answer is routed, not crashed on');
+    assert(/where you heard/i.test(ws.modalReply?.content || ''),
+      `the buyer is asked again, exactly as an empty IGN asks again (got "${ws.modalReply?.content || ''}")`);
+    assert(ws.draft === null, 'no draft is opened by a blank answer');
+    const stillOpen = await db.getRun(run._id);
+    assert(stillOpen.seats[0].status === SEAT_STATUS.OPEN, 'and NO SEAT IS TAKEN');
+    assert((await db.listBookingsForRun(run._id)).length === 0, 'nothing reaches the ledger either');
+  }
+
+  // ---- DEPLOY SAFETY: a modal opened BEFORE this field shipped ------------
+  resetStore();
+  {
+    // The real production case: a buyer opens the form seconds before the
+    // deploy and submits it seconds after. That submission has NO heard-from
+    // input, and discord.js THROWS on a read of an absent custom id. An escaped
+    // throw would take out the handler and cost a paying buyer their place.
+    const client = makeClient();
+    const run = await newRun('SS', 24, { createdBy: RUNNER_ID });
+
+    let legacy = null;
+    let crash = null;
+    try {
+      legacy = await bookThroughModal(client, run, { userId: 'buyerC', ign: 'Legacy', omitHeardFrom: true });
+    } catch (err) { crash = err; }
+
+    assert(crash === null, `route() SURVIVES a submit with only the IGN on it${crash ? ` — it threw: ${crash.message}` : ''}`);
+    assert(legacy && legacy.modalRouted === true, 'the stale submit is routed normally');
+    assert(legacy?.draft && legacy.draft.heardFrom === null, 'the absent answer becomes an explicit null on the draft');
+
+    const fresh = await db.getRun(run._id);
+    assert(fresh.seats[0].status === SEAT_STATUS.PENDING,
+      'THE SALE STILL GOES THROUGH — the buyer does not lose their seat over our deploy timing');
+    assert(fresh.seats[0].heardFrom === null, 'the seat records null rather than being left undefined');
+    // Guarded reads: if the safe accessor regresses, this block must report
+    // FAILURES rather than crash the harness and hide the checks below it.
+    const booking = (await db.getBooking(fresh.seats[0].bookingId)) || {};
+    assert(booking.heardFrom === null, 'and so does the booking');
+    assert(booking.ign === 'Legacy', 'the IGN they DID give is recorded');
+    assert(legacy?.dm != null, 'and they still get their payment DM');
+
+    // NEGATIVE CONTROL. Prove the assertions above have teeth: the unguarded
+    // read — getTextInputValue() straight, the way the IGN is read — genuinely
+    // throws on this exact payload. If handleBookingModal went back to it, the
+    // block above goes red instead of silently passing.
+    const stale = bookingModalInteraction({
+      userId: 'ctrl', runId: run._id, seatIndex: 1, fields: { carry_ign: 'Legacy' },
+    });
+    let naiveThrew = false;
+    try { stale.fields.getTextInputValue('carry_heard_from'); } catch { naiveThrew = true; }
+    assert(naiveThrew,
+      'NEGATIVE CONTROL: an unguarded read of the absent field DOES throw — the safe accessor is load-bearing');
+    assert(stale.fields.getTextInputValue('carry_ign') === 'Legacy',
+      'while the field that IS present still reads back normally');
+
+    // ---- how a legacy row renders to an officer --------------------------
+    const legacyRow = { ...booking };
+    delete legacyRow.heardFrom;   // a booking written before the field existed
+    const legacyValue = handlers.buildBookingEmbed(legacyRow, fresh).toJSON().fields.find(f => /heard/i.test(f.name)).value;
+    assert(legacyValue.trim().length > 0, 'a legacy booking does NOT render a blank cell');
+    assert(/not recorded/i.test(legacyValue), `it says "not recorded" (got "${legacyValue}")`);
+    assert(!/null|undefined/i.test(legacyValue), 'and never the literal text "null" or "undefined"');
+
+    // NEGATIVE CONTROL for that render: the failure mode is real, not theoretical.
+    assert(String(legacyRow.heardFrom) === 'undefined',
+      'NEGATIVE CONTROL: naively stringifying the absent field yields "undefined" — precisely what the assertion above rules out');
+
+    // A null (a submit that crossed the deploy) must read the same to an officer.
+    const nullValue = handlers.buildBookingEmbed(booking, fresh).toJSON().fields.find(f => /heard/i.test(f.name)).value;
+    assert(nullValue === legacyValue,
+      'a null answer and an absent one look identical to an officer — one message, not two mysteries');
   }
 
   // -------------------------------------------------------------------------
