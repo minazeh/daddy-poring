@@ -33,8 +33,12 @@
 //                       kind, name, memberIds:string[], position,
 //                       lockedSlots:number[], updatedAt }
 //     The POLARITY layout is a SECOND, independent raid arrangement owned by the
-//     web app (6 raids per guild: 2 main x 5 parties, 4 normal x 8). It shares
-//     nothing with `parties` / `raidGroups`. Read-only here, same as the rest.
+//     web app (6 raids per guild: 2 main x 5 parties, 4 normal x 5 — the normal
+//     raids were 8 until 2026-09-20). It shares nothing with `parties` /
+//     `raidGroups`. Read-only here, same as the rest.
+//     NOTE: the collection still stores 42 rows per guild — the 12 surplus
+//     documents from the 8-party era are HIDDEN, not deleted. getPolarityParties
+//     filters them out by position; see POLARITY_VISIBLE_PARTY_COUNT below.
 //
 //   siegeRaids   — { raidId:"${type}-siege-${raidKey}", type,
 //                    raidKey:"alpha"|"bravo"|"charlie"|"delta", name, position,
@@ -137,13 +141,39 @@ async function getPolarityRaids(guild) {
   return db.collection('polarityRaids').find({ type: guild }).sort({ position: 1 }).toArray();
 }
 
+// How many parties the WEB APP shows per polarity raid. The visible slot
+// positions are therefore 0 .. POLARITY_VISIBLE_PARTY_COUNT - 1, and ONE bound
+// covers both kinds because main and normal raids are both 5 parties now.
+//
+// SOURCE OF TRUTH: projects/daddy-poring-web/src/lib/polarity.ts —
+// POLARITY_MAIN_PARTY_COUNT and POLARITY_NORMAL_PARTY_COUNT. The web app cut
+// the normal raids from 8 parties to 5 on 2026-09-20 and HID the surplus party
+// documents rather than deleting them: `polarityParties` still holds 42 rows
+// per guild, of which 12 (normal positions 5-7) are no longer on the board.
+// Mummy's hidden rows still carry 25 members; daddy's are empty, which is why
+// only mummy would have shown the fault.
+//
+// THE TWO REPOS MUST MOVE IN LOCKSTEP. There is no shared config — if the
+// party count changes in polarity.ts again (it went 8 -> 6 -> 5 in one
+// conversation), this constant has to change in the same breath. Too low and
+// /polarityraid silently drops real parties; too high and it renders phantom
+// parties the website says do not exist, double-listing their members.
+const POLARITY_VISIBLE_PARTY_COUNT = 5;
+
 // POLARITY parties where type === guild, sorted by raid then slot position.
 // Read-only.
+//
+// FILTERED to the VISIBLE positions. Without the position bound this read
+// returns the hidden rows too; render.js drops empty parties, so daddy looked
+// fine, but mummy's 25 stranded members would render TWICE — once in their real
+// party and once in a phantom one. /profile (commands/profile.js) reads the
+// same function and would name the phantom party. Filtering here fixes both
+// without touching production data.
 async function getPolarityParties(guild) {
   if (!isReady()) return [];
   return db
     .collection('polarityParties')
-    .find({ type: guild })
+    .find({ type: guild, position: { $lt: POLARITY_VISIBLE_PARTY_COUNT } })
     .sort({ raidId: 1, position: 1 })
     .toArray();
 }

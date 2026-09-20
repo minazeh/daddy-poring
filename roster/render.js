@@ -595,7 +595,9 @@ function buildRaidImages(guild, data) {
 // second, independent raid layout (web-owned `polarityRaids` /
 // `polarityParties`; nothing to do with the GvG main/sub fields).
 //
-// Structure per guild: 2 main raids x 5 parties + 4 normal raids x 8 parties.
+// Structure per guild: 2 main raids x 5 parties + 4 normal raids x 5 parties
+// (the normal raids were 8 until 2026-09-20; roster/db.js filters the hidden
+// surplus rows out of the read, so nothing arrives here at position 5-7).
 // Each image POOLS every non-empty party of that KIND into ONE flat grid, in
 // raid position order, each raid's parties in slot order.
 //
@@ -603,8 +605,8 @@ function buildRaidImages(guild, data) {
 // parameter now; fitRows() picks the flattest grid whose card width still
 // clears MIN_CARD_W, so the layout survives a change to partySize or to the
 // raid structure. On today's data: 10 main parties → 2 rows x 5 cols at the
-// natural 360px; 32 normal parties → 4 rows x 8 cols at ~221px. Both fit the
-// hard 1920 width — the picture grows TALLER, not wider.
+// natural 360px; 20 normal parties → 4 rows x 5 cols at the natural 360px.
+// Both fit the hard 1920 width — the picture grows TALLER, not wider.
 //
 // RAID ATTRIBUTION: party names repeat across raids (every raid has its own
 // "Party 1".."Party 8"), so a pooled card carries a raid "eyebrow" — the raid
