@@ -101,8 +101,11 @@ const PARTY_SIZE_OPTIONS = ['5', '10', 'Custom'];
 // may join/switch to any category present in the union of their class roles'
 // allowed lists; clicking a category outside that union is rejected.
 const CLASS_ALLOWED_CATEGORIES = {
+  '1552024646252240987': ['DPS'],          // Alchemist
   '1518174065892790343': ['DPS'],          // Assassin
+  '1552024522863939664': ['DPS'],          // Bard
   '1518235600833220789': ['DPS'],          // Blacksmith
+  '1552024620218064946': ['DPS'],          // Dancer
   '1518235678163341422': ['DPS'],          // Druid  (confirmed DPS)
   '1518174090538778635': ['DPS'],          // Gunslinger
   '1518174067411259503': ['DPS'],          // Hunter
@@ -126,6 +129,9 @@ const CLASS_CATEGORY_BY_ROLE_ID = {
   '1518238680051875920': 'DPS',  // Wizard
   '1518235678163341422': 'DPS',  // Druid
   '1534862381610696754': 'DPS',  // Monk
+  '1552024522863939664': 'DPS',  // Bard
+  '1552024620218064946': 'DPS',  // Dancer
+  '1552024646252240987': 'DPS',  // Alchemist
 };
 
 // Sanity: every class role in the shared roster must have an allowed-categories

@@ -18,6 +18,9 @@ const DEFAULT_CLASS_ROLES = {
   Wizard: 'dps',
   Druid: 'dps',
   Monk: 'dps',
+  Bard: 'dps',
+  Dancer: 'dps',
+  Alchemist: 'dps',
 };
 
 // Display labels + emoji for each role.

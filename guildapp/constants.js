@@ -22,6 +22,9 @@ const CLASS_ROLE_BY_ID = {
   '1518235678163341422': 'Druid',
   '1534862070976352266': 'Paladin',
   '1534862381610696754': 'Monk',
+  '1552024522863939664': 'Bard',
+  '1552024620218064946': 'Dancer',
+  '1552024646252240987': 'Alchemist',
 };
 
 // Role IDs for application review role management.
