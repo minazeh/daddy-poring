@@ -32,6 +32,8 @@ const DEFAULT_CLASS_ROLES = {
   Bard: 'dps',
   Dancer: 'dps',
   Alchemist: 'dps',
+  Sage: 'dps',
+  Rogue: 'dps',
 };
 
 const ROLE_ICONS = { tank: '🛡️', healer: '⚕️', dps: '⚔️' };

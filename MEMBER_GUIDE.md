@@ -42,7 +42,7 @@ an event (MVP, raid, etc.) or **ask for a carry**. Everything is posted in the
 **#party-finder** channel so others can join.
 
 > You need your guild **class role** (Assassin, Hunter, Knight, Priest, Gunslinger,
-> Blacksmith, Wizard, Druid, Paladin, Monk, Bard, Dancer, or Alchemist) and your member role to use Party Finder. If the bot
+> Blacksmith, Wizard, Druid, Paladin, Monk, Bard, Dancer, Alchemist, Sage, or Rogue) and your member role to use Party Finder. If the bot
 > says you don't have a recognized class role, ask an officer to assign it.
 
 ### Opening the Party Finder card

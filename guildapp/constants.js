@@ -25,6 +25,8 @@ const CLASS_ROLE_BY_ID = {
   '1552024522863939664': 'Bard',
   '1552024620218064946': 'Dancer',
   '1552024646252240987': 'Alchemist',
+  '1565628683685724170': 'Sage',
+  '1565628894961467412': 'Rogue',
 };
 
 // Role IDs for application review role management.

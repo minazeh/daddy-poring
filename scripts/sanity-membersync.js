@@ -98,11 +98,11 @@ assert('No roles → isSub=false',  neitherDoc.isSub  === false);
 console.log('\n--- 3. className resolution ---');
 
 const classEntries = Object.entries(CLASS_ROLE_BY_ID);
-assert('CLASS_ROLE_BY_ID has 13 entries', classEntries.length === 13, `got ${classEntries.length}`);
+assert('CLASS_ROLE_BY_ID has 15 entries', classEntries.length === 15, `got ${classEntries.length}`);
 
-const expectedClasses = ['Assassin','Hunter','Knight','Priest','Gunslinger','Blacksmith','Wizard','Druid','Paladin','Monk','Bard','Dancer','Alchemist'].sort();
+const expectedClasses = ['Assassin','Hunter','Knight','Priest','Gunslinger','Blacksmith','Wizard','Druid','Paladin','Monk','Bard','Dancer','Alchemist','Sage','Rogue'].sort();
 const actualClasses   = classEntries.map(([, n]) => n).sort();
-assert('All 13 class names present', JSON.stringify(actualClasses) === JSON.stringify(expectedClasses), actualClasses.join(','));
+assert('All 15 class names present', JSON.stringify(actualClasses) === JSON.stringify(expectedClasses), actualClasses.join(','));
 
 const knightRoleId = classEntries.find(([, n]) => n === 'Knight')?.[0];
 assert('Knight role ID exists', !!knightRoleId, knightRoleId);
@@ -116,13 +116,13 @@ const noClassDoc = memberToDoc(makeMember({ userId: 'u6', username: 'frank', dis
 assert('No class role → className=null',   noClassDoc.className   === null);
 assert('No class role → classRoleId=null', noClassDoc.classRoleId === null);
 
-// All 13 classes resolve
+// All 15 classes resolve
 for (const [roleId, name] of classEntries) {
   const doc = memberToDoc(makeMember({ userId: `cx_${roleId}`, username: name, displayName: name, roles: [roleId, DADDY_ROLE_ID] }));
   assert(`Class ${name} resolves correctly`, doc.className === name && doc.classRoleId === roleId);
 }
 
-// Bard / Dancer / Alchemist (added 2026-09-23): right class, DPS-only in Party
+// Bard / Dancer / Alchemist / Sage / Rogue (Bard-Alchemist added 2026-09-23, Sage + Rogue 2026-11-01): right class, DPS-only in Party
 // Finder, 'dps' in the roster role map, and never counted as a Priest.
 {
   const { CLASS_ALLOWED_CATEGORIES, CLASS_CATEGORY_BY_ROLE_ID } = require('../partyfinder/constants');
@@ -131,6 +131,8 @@ for (const [roleId, name] of classEntries) {
     '1552024522863939664': 'Bard',
     '1552024620218064946': 'Dancer',
     '1552024646252240987': 'Alchemist',
+    '1565628683685724170': 'Sage',
+    '1565628894961467412': 'Rogue',
   };
   for (const [roleId, name] of Object.entries(NEW_CLASSES)) {
     assert(`${name} role ID → ${name}`, CLASS_ROLE_BY_ID[roleId] === name, CLASS_ROLE_BY_ID[roleId]);

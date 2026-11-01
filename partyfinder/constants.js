@@ -113,6 +113,8 @@ const CLASS_ALLOWED_CATEGORIES = {
   '1534862381610696754': ['DPS'],          // Monk
   '1534862070976352266': ['Tank', 'DPS'],  // Paladin (Tank primary, can also DPS)
   '1518174089817227415': ['DPS', 'Heal'],  // Priest  (DPS primary, can also Heal)
+  '1565628894961467412': ['DPS'],          // Rogue
+  '1565628683685724170': ['DPS'],          // Sage
   '1518238680051875920': ['DPS'],          // Wizard
 };
 
@@ -132,6 +134,8 @@ const CLASS_CATEGORY_BY_ROLE_ID = {
   '1552024522863939664': 'DPS',  // Bard
   '1552024620218064946': 'DPS',  // Dancer
   '1552024646252240987': 'DPS',  // Alchemist
+  '1565628683685724170': 'DPS',  // Sage
+  '1565628894961467412': 'DPS',  // Rogue
 };
 
 // Sanity: every class role in the shared roster must have an allowed-categories

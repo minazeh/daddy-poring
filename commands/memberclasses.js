@@ -86,6 +86,8 @@ module.exports = {
           { name: 'Bard',        value: 'bard'       },
           { name: 'Dancer',      value: 'dancer'     },
           { name: 'Alchemist',   value: 'alchemist'  },
+          { name: 'Sage',        value: 'sage'       },
+          { name: 'Rogue',       value: 'rogue'      },
         )
     )
     .addStringOption(option =>

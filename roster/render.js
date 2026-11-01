@@ -76,6 +76,8 @@ const DEFAULT_CLASS_ROLES = {
   Bard: 'dps',
   Dancer: 'dps',
   Alchemist: 'dps',
+  Sage: 'dps',
+  Rogue: 'dps',
 };
 
 const DEFAULT_REQUIRED_CLASSES = [{ className: 'Priest', min: 1 }];
